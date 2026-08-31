@@ -1576,6 +1576,31 @@ class Game {
   /* ---------------- render ---------------- */
 
   render() {
+    /* Rendering must never mutate the world. A copy of the cage-freeing code
+       once ended up inside drawProps, which spawned a companion on every
+       frame the cage was visible — invisible to any test that stepped update
+       without also drawing. This invariant makes that class of bug announce
+       itself the first time it happens instead of hiding until someone sees
+       a screen full of duplicates. */
+    const before = this._renderGuard || (this._renderGuard = {});
+    before.enemies = this.enemies ? this.enemies.length : 0;
+    before.companions = this.companions ? this.companions.length : 0;
+    before.minions = this.minions ? this.minions.length : 0;
+
+    this.renderFrame();
+
+    if (this.enemies && (this.enemies.length !== before.enemies
+      || this.companions.length !== before.companions
+      || this.minions.length !== before.minions)) {
+      console.error('render() mutated the world — a side effect leaked into a draw path:', {
+        enemies: `${before.enemies} -> ${this.enemies.length}`,
+        companions: `${before.companions} -> ${this.companions.length}`,
+        minions: `${before.minions} -> ${this.minions.length}`,
+      });
+    }
+  }
+
+  renderFrame() {
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.vw, this.vh);
@@ -1762,19 +1787,7 @@ class Game {
           ctx.globalAlpha = 0.4;
           ctx.beginPath(); ctx.arc(x, fy, 13 + Math.sin(t * 3) * 2, 0, Math.PI * 2); ctx.fill();
         }
-      } else if (prop.type === 'cage') {
-      prop.used = true;
-      const c = new Companion(prop.npc, prop.x, prop.y);
-      this.companions.push(c);
-      this.fx.ring(prop.x, prop.y, 44, c.def.color, 30);
-      this.fx.spark(prop.x, prop.y, {
-        count: 26, color: [c.def.color, '#ffffff'], speedMax: 240, lifeMax: 0.7, sizeMax: 4,
-      });
-      this.fx.text(prop.x, prop.y - 30, c.def.name, c.def.color, 18);
-      this.toast(`${c.def.name} is free. ${c.def.blurb}`, 5);
-      this.audio.summon();
-
-    } else if (prop.type === 'redshrine') {
+      } else if (prop.type === 'redshrine') {
         const dead = prop.used;
         ctx.fillStyle = 'rgba(0,0,0,.4)';
         ctx.beginPath(); ctx.ellipse(x, y + 16, 17, 7, 0, 0, Math.PI * 2); ctx.fill();
