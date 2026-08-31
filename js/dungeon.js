@@ -389,6 +389,31 @@ class Dungeon {
 
     this.placeRedShrines();
     this.placeUpdate2Shrines();
+    this.placeCages();
+  }
+
+  /* Two caged companions per map, and John Space out in the deep regions
+     where you are least inclined to take chances. */
+  placeCages() {
+    const r = this.rng;
+    const free = this.rooms.filter(room =>
+      room.kind !== 'start' && room.kind !== 'boss' && !room.hasRedShrine && !room.hasShrine2 && !room.hasCage);
+
+    for (const kind of ['disgraced', 'switcher']) {
+      if (!free.length) break;
+      const room = free.splice(r.int(0, free.length), 1)[0];
+      room.hasCage = true;
+      this.props.push({ type: 'cage', ...this.spotIn(room, 1), room, used: false, npc: kind });
+    }
+
+    // John Space only appears in the later half of the depth ladder.
+    const deep = free.filter(room => room.tier >= 3);
+    if (deep.length) {
+      const room = deep[r.int(0, deep.length)];
+      room.hasCage = true;
+      const spot = this.spotIn(room, 2);
+      this.johnSpot = { x: spot.x, y: spot.y, room };
+    }
   }
 
   /* Class shrines, yellow shrines and corrupted shrines. All seeded, so the

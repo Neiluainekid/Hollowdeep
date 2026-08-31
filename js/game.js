@@ -235,6 +235,8 @@ class Game {
     this.minions = [];
     this.zones = [];
     this.impacts = [];
+    this.companions = [];
+    this.johnSpace = null;
     this.roulette = { open: false, held: 0, slot: Seq.FIRST };
 
     this.bindEvents();
@@ -366,6 +368,8 @@ class Game {
     this.minions = [];
     this.zones = [];
     this.impacts = [];
+    this.companions = [];
+    this.johnSpace = null;
     this.fx.clear();
     this.dungeon = new Dungeon(Seq.get(this.mapSeeds, this.mapNumber), def);
     this.exploreCanvas = null;    // rebuilt lazily at the new map's size
@@ -385,6 +389,10 @@ class Game {
     const promoted = this.player.setWeaponTier(this.mapNumber, opts.fresh ? null : this);
 
     this.propHash.rebuild(this.dungeon.props);
+    if (this.dungeon.johnSpot) {
+      const j = this.dungeon.johnSpot;
+      this.johnSpace = this.spawnEnemy('johnspace', j.x, j.y, j.room.threat, false);
+    }
     this.cam.x = this.player.x - this.vw / 2;
     this.cam.y = this.player.y - this.vh / 2;
     this.bossActive = false;
@@ -1001,6 +1009,16 @@ class Game {
       prop.used = true;
       const healed = p.heal(Math.round(p.maxHp * 0.45));
       p.energy = p.maxEnergy;
+      // Companions drink too — the reason to save a fountain rather than
+      // sip it the moment you find one.
+      for (const c of this.companions) {
+        if (c.dead) continue;
+        const h = c.heal(c.maxHp);
+        if (h > 0) {
+          this.fx.text(c.x, c.y - 30, `+${h}`, c.def.color, 14);
+          this.fx.ring(c.x, c.y, 22, c.def.color, 16);
+        }
+      }
       this.fx.text(prop.x, prop.y - 24, `+${healed}`, '#6fbf73', 18);
       this.fx.ring(prop.x, prop.y, 28, '#6fbf73', 22);
       this.audio.blip(520, 0.3, 0.1, 'sine');
@@ -1008,6 +1026,18 @@ class Game {
     } else if (prop.type === 'shrine') {
       prop.used = true;
       this.openPerkChoice('shrine');
+
+    } else if (prop.type === 'cage') {
+      prop.used = true;
+      const c = new Companion(prop.npc, prop.x, prop.y);
+      this.companions.push(c);
+      this.fx.ring(prop.x, prop.y, 44, c.def.color, 30);
+      this.fx.spark(prop.x, prop.y, {
+        count: 26, color: [c.def.color, '#ffffff'], speedMax: 240, lifeMax: 0.7, sizeMax: 4,
+      });
+      this.fx.text(prop.x, prop.y - 30, c.def.name, c.def.color, 18);
+      this.toast(`${c.def.name} is free. ${c.def.blurb}`, 5);
+      this.audio.summon();
 
     } else if (prop.type === 'redshrine') {
       this.wakeRedShrine(prop);
@@ -1141,6 +1171,23 @@ class Game {
       this.audio.freeze();
       this.hudCache.prompt = null;
     }
+  }
+
+  /* Two minutes of being left alone and John Space simply joins you. The
+     Enemy is removed and a 500 HP Companion takes its place. */
+  johnBefriended(enemy) {
+    if (enemy.dead) return;
+    enemy.dead = true;
+    if (this.johnSpace === enemy) this.johnSpace = null;
+    const c = new Companion('johnspace', enemy.x, enemy.y);
+    this.companions.push(c);
+    this.fx.ring(enemy.x, enemy.y, 60, '#8fd4ff', 40);
+    this.fx.spark(enemy.x, enemy.y, {
+      count: 40, color: ['#8fd4ff', '#ffffff'], speedMax: 300, lifeMax: 0.9, sizeMax: 5,
+    });
+    this.fx.text(enemy.x, enemy.y - 44, 'JOHN SPACE JOINS YOU', '#8fd4ff', 19);
+    this.toast('You left him alone for two minutes. John Space appreciates that.', 6);
+    this.audio.freeze();
   }
 
   updateRedShrines() {
@@ -1330,6 +1377,12 @@ class Game {
       if (pk.dead) this.pickups.splice(i, 1);
     }
 
+    for (let i = this.companions.length - 1; i >= 0; i--) {
+      const c = this.companions[i];
+      c.update(dt, this);
+      if (c.dead) this.companions.splice(i, 1);
+    }
+
     for (let i = this.minions.length - 1; i >= 0; i--) {
       const m = this.minions[i];
       m.update(dt, this);
@@ -1499,6 +1552,7 @@ class Game {
           case 'chest': return prop.rich ? 'open the <b>warded chest</b>' : 'open the <b>chest</b>';
           case 'fountain': return 'drink from the <b>fountain</b>';
           case 'shrine': return 'touch the <b>shrine</b>';
+          case 'cage': return `free <b>${COMPANIONS[prop.npc].name}</b>`;
           case 'redshrine': return 'break the <b>red shrine</b>';
           case 'classshrine': return Shrines.matches(prop.shrine, p)
             ? `claim the <b>${prop.shrine.name}</b>`
@@ -1539,6 +1593,7 @@ class Game {
     this.drawImpactMarkers(ctx);
     this.drawEnemies(ctx);
     for (const m of this.minions) m.draw(ctx);
+    for (const c of this.companions) c.draw(ctx, this.time);
     this.drawPlayer(ctx);
     for (const pr of this.projectiles) pr.draw(ctx);
     this.fx.drawParticles(ctx);
@@ -1707,7 +1762,19 @@ class Game {
           ctx.globalAlpha = 0.4;
           ctx.beginPath(); ctx.arc(x, fy, 13 + Math.sin(t * 3) * 2, 0, Math.PI * 2); ctx.fill();
         }
-      } else if (prop.type === 'redshrine') {
+      } else if (prop.type === 'cage') {
+      prop.used = true;
+      const c = new Companion(prop.npc, prop.x, prop.y);
+      this.companions.push(c);
+      this.fx.ring(prop.x, prop.y, 44, c.def.color, 30);
+      this.fx.spark(prop.x, prop.y, {
+        count: 26, color: [c.def.color, '#ffffff'], speedMax: 240, lifeMax: 0.7, sizeMax: 4,
+      });
+      this.fx.text(prop.x, prop.y - 30, c.def.name, c.def.color, 18);
+      this.toast(`${c.def.name} is free. ${c.def.blurb}`, 5);
+      this.audio.summon();
+
+    } else if (prop.type === 'redshrine') {
         const dead = prop.used;
         ctx.fillStyle = 'rgba(0,0,0,.4)';
         ctx.beginPath(); ctx.ellipse(x, y + 16, 17, 7, 0, 0, Math.PI * 2); ctx.fill();
@@ -1751,6 +1818,38 @@ class Game {
             ctx.fillStyle = 'rgba(255,180,160,.85)';
             ctx.fillText('GUARDIANS', x, y - 27);
           }
+        }
+
+      } else if (prop.type === 'cage') {
+        const open = prop.used;
+        const c = COMPANIONS[prop.npc];
+        ctx.fillStyle = 'rgba(0,0,0,.36)';
+        ctx.beginPath(); ctx.ellipse(x, y + 14, 18, 7, 0, 0, Math.PI * 2); ctx.fill();
+        if (!open) {
+          ctx.fillStyle = c.color;
+          ctx.globalAlpha = 0.85;
+          ctx.fillRect(x - 7, y - 12, 14, 22);      // the occupant
+          ctx.beginPath(); ctx.arc(x, y - 16, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        ctx.strokeStyle = open ? '#4a4038' : '#8a7a5c';
+        ctx.lineWidth = 2.5;
+        ctx.strokeRect(x - 15, y - 26, 30, 40);
+        if (!open) {
+          for (let i = -2; i <= 2; i++) {
+            ctx.beginPath();
+            ctx.moveTo(x + i * 6, y - 26); ctx.lineTo(x + i * 6, y + 14);
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 0.25 + Math.sin(t * 2.5) * 0.12;
+          ctx.fillStyle = c.color;
+          ctx.beginPath(); ctx.arc(x, y - 6, 26, 0, Math.PI * 2); ctx.fill();
+        } else {
+          // Door swung open.
+          ctx.beginPath();
+          ctx.moveTo(x + 15, y - 26); ctx.lineTo(x + 30, y - 16);
+          ctx.lineTo(x + 30, y + 6); ctx.lineTo(x + 15, y + 14);
+          ctx.stroke();
         }
 
       } else if (prop.type === 'classshrine' || prop.type === 'yellowshrine' || prop.type === 'corruptshrine') {
@@ -2314,6 +2413,7 @@ class Game {
     }
     for (const pr of this.projectiles) cut(pr.x, pr.y, 90, 0.55);
     for (const m of this.minions) cut(m.x, m.y, 130, 0.5);
+    for (const c of this.companions) cut(c.x, c.y, 150, 0.5);
     for (const z of this.zones) cut(z.x, z.y, z.radius * 2.2, 0.45);
     for (const m of this.impacts) cut(m.x, m.y, m.radius * 2.2, 0.5);
     if (this.boss) cut(this.boss.x, this.boss.y, 320, 0.7);
@@ -2401,6 +2501,32 @@ class Game {
       ctx.font = '600 10px system-ui';
       ctx.fillStyle = 'rgba(240,230,210,.6)';
       ctx.fillText(`PHASE ${b.phase}  ·  ${Math.ceil(b.hp)} / ${b.maxHp}`, this.vw / 2, y - 4);
+    }
+
+    /* John Space carries a bar whether he is neutral or hostile — it is how
+       you know he is not just another wanderer. */
+    const j = this.johnSpace;
+    if (j && !j.dead) {
+      const w = Math.min(420, this.vw * 0.4), h = 12;
+      const x = (this.vw - w) / 2, y = 34;
+      const frac = U.clamp(j.hp / j.maxHp, 0, 1);
+      ctx.fillStyle = 'rgba(0,0,0,.75)';
+      ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = j.enraged ? '#c8452f' : '#8fd4ff';
+      ctx.fillRect(x, y, w * frac, h);
+      ctx.strokeStyle = 'rgba(255,255,255,.25)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = '#f0e6d2';
+      ctx.font = '600 11px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(j.enraged ? 'JOHN SPACE — PROVOKED' : 'JOHN SPACE — NEUTRAL', this.vw / 2, y - 6);
+      if (!j.enraged) {
+        const left = Math.max(0, j.def.peaceRequired - j.peaceT);
+        ctx.fillStyle = 'rgba(240,230,210,.55)';
+        ctx.font = '10px system-ui';
+        ctx.fillText(`leave him alone: ${Math.ceil(left)}s`, this.vw / 2, y + h + 13);
+      }
     }
 
     this.drawRhythm(ctx);

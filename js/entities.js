@@ -893,6 +893,26 @@ const ENEMY_TYPES = {
     attacks: [],
   },
 
+  /* John Space stands in the deep regions and does nothing. He is neutral,
+     carries a bar so you know he is Someone, and what he becomes is decided
+     entirely by whether you leave him alone. */
+  johnspace: {
+    name: 'John Space', hp: 500, speed: 96, radius: 16, xp: 260, gold: 200,
+    ai: 'neutral', color: '#8fd4ff', dark: '#2b3c66',
+    // Fixed numbers, not region-scaled: the spec's 1000 HP / 2x on provoking
+    // has to be an escalation, and tier scaling was pushing his neutral form
+    // above his hostile one.
+    neutral: true, showBar: true, noScale: true,
+    peaceRequired: 120,        // seconds of being left alone
+    enragedHp: 1000, enragedDmgMul: 2,
+    attacks: [
+      { id: 'jab', kind: 'blue', shape: 'melee', range: 84, reach: 60, arc: 1.8,
+        wind: 0.34, active: 0.13, recover: 0.3, damage: 20, cd: 1.1, lunge: 400 },
+      { id: 'haymaker', kind: 'red', shape: 'melee', range: 92, reach: 70, arc: 1.7,
+        wind: 0.6, active: 0.17, recover: 0.7, damage: 34, cd: 4.5, lunge: 340 },
+    ],
+  },
+
   warden: {
     name: 'The Hollow Warden', hp: 900, speed: 58, radius: 34, xp: 400, gold: 300,
     ai: 'boss', color: '#c8452f', dark: '#3d1712', boss: true,
@@ -932,10 +952,10 @@ class Enemy {
     this.elite = elite;
     this.tier = tier;
 
-    const scale = 1 + tier * 0.34;
+    const scale = t.noScale ? 1 : 1 + tier * 0.34;
     this.maxHp = Math.round(t.hp * scale * (elite ? 2.1 : 1));
     this.hp = this.maxHp;
-    this.dmgScale = (1 + tier * 0.26) * (elite ? 1.35 : 1) * (t.bossDmgMul || 1);
+    this.dmgScale = (t.noScale ? 1 : 1 + tier * 0.26) * (elite ? 1.35 : 1) * (t.bossDmgMul || 1);
     this.speed = t.speed * (elite ? 0.92 : 1);
     this.xpValue = Math.round(t.xp * (1 + tier * 0.3) * (elite ? 2.4 : 1));
     this.goldValue = Math.round(t.gold * (1 + tier * 0.4) * (elite ? 3 : 1));
@@ -958,6 +978,9 @@ class Enemy {
     this.bob = U.rand(0, 10);
     this.phase = 1;
     this.moveAngle = U.rand(0, Math.PI * 2);
+    this.neutral = !!t.neutral;
+    this.enraged = false;
+    this.peaceT = 0;       // John Space: seconds left alone
     this.fuse = 0;         // Tridon's Curse: lit, and counting down
     this.lit = false;
     this.face = 0;         // which way it is turned — matters for shields
@@ -966,6 +989,25 @@ class Enemy {
   }
 
   canAct() { return this.stun <= 0 && this.stagger <= 0; }
+
+  /* You attacked him. He is now a 1000 HP problem that does double damage
+     and does not stop following you. */
+  enrage(game) {
+    this.enraged = true;
+    this.neutral = false;
+    this.aggro = true;
+    this.maxHp = this.def.enragedHp;
+    this.hp = this.def.enragedHp;
+    this.dmgScale *= this.def.enragedDmgMul;
+    this.speed *= 1.35;
+    this.def_ai_override = 'chase';
+    game.fx.ring(this.x, this.y, 60, '#ff3b1f', 44);
+    game.fx.addShake(16);
+    game.fx.addFlash('#c8452f', 0.5);
+    game.fx.text(this.x, this.y - 46, 'YOU SHOULD NOT HAVE', '#ff6b52', 19);
+    game.toast('John Space stops being neutral.', 5);
+    game.audio.blip(70, 0.8, 0.22, 'sawtooth');
+  }
 
   // Parried enemies are open: they stop acting and take extra damage.
   onParried(game) {
@@ -1012,6 +1054,8 @@ class Enemy {
 
   takeDamage(n, game, srcX, srcY, knock = 0, crit = false) {
     if (this.dead) return;
+    // Hit John Space once and the arrangement is over.
+    if (this.neutral && !this.enraged) this.enrage(game);
     if (this.stagger > 0) n *= PARRY.vuln;
 
     /* Ironclads eat frontal damage until you open them. Parrying strips the
@@ -1124,6 +1168,21 @@ class Enemy {
       return;
     }
 
+    /* John Space, unprovoked: he wanders, he does not close, and he does not
+       attack. Leave him be long enough and he throws in with you instead. */
+    if (this.neutral && !this.enraged) {
+      this.peaceT += dt;
+      if (this.peaceT >= this.def.peaceRequired) { game.johnBefriended(this); return; }
+      if (this.stateT > 2.4) { this.moveAngle = U.rand(0, Math.PI * 2); this.stateT = 0; }
+      const wander = 0.28;
+      this.applySeparation(game, (v) => {
+        this.integrate(dt, game,
+          Math.cos(this.moveAngle) * this.speed * wander + v.x,
+          Math.sin(this.moveAngle) * this.speed * wander + v.y);
+      });
+      return;
+    }
+
     /* Tridon's Curse: contact lights the fuse, and once lit nothing stops it.
        Killing it early is the counterplay, so the fuse keeps burning even
        through a stagger. */
@@ -1149,7 +1208,7 @@ class Enemy {
       const target = (focus !== p) ? focus : (canSee ? p : (this.lastSeen || p));
       const ang = U.angle(this.x, this.y, target.x, target.y);
 
-      switch (this.def.ai) {
+      switch (this.def_ai_override || this.def.ai) {
         case 'chase': {
           ax = Math.cos(ang) * this.speed;
           ay = Math.sin(ang) * this.speed;

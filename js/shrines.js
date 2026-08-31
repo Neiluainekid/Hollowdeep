@@ -141,6 +141,7 @@ const Shrines = {
       case 'gate': return { icon: '★', color: '#ffffff', label: 'boss gate', big: true };
       case 'chest': return { icon: '▮', color: '#e2b34a', label: 'chest' };
       case 'fountain': return { icon: '≈', color: '#4fd0a8', label: 'fountain' };
+      case 'cage': return { icon: '⌗', color: '#c8a86a', label: 'caged companion' };
       default: return { icon: '•', color: '#9a9280', label: prop.type };
     }
   },

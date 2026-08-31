@@ -122,6 +122,31 @@ region scaling, each with a named health bar:
 | **The Sun God** — *Predicament King* | Sarapolis | A corona of rays; relentless ranged pressure |
 | **Judgement** — *Pure Devastation* | Sarapolis (final) | Clenched fists and almost nothing but charges |
 
+## Companions
+
+Two are found locked in cages and freed with `E`; the third decides for himself.
+They are persistent — no expiry timer — they pull attacks off you, and
+**drinking from a fountain heals every companion with you**, which is the
+reason to save a fountain rather than sip it the moment you find one.
+
+| | HP | |
+|---|---|---|
+| **The Disgraced One** | 200 | Barehanded slashes, ~130 damage over five seconds |
+| **Switcher** | 150 | Claps, and swaps `(x,y)` with a nearby enemy — yanking it off you and taking its place |
+| **John Space** | 500 | Not caged. See below. |
+
+### John Space
+
+He stands in the deeper regions doing nothing, neutral, carrying his own bar so
+you know he is Someone. What he becomes is entirely your choice:
+
+- **Attack him** and the arrangement ends: he becomes a **1000 HP** chaser
+  dealing **double damage** that does not stop following you.
+- **Leave him alone for two minutes** and he simply joins you as a **500 HP**
+  companion.
+
+The bar counts the remaining seconds down while he is still neutral.
+
 ### The rhythm break
 
 **Parrying a boss stops the world.** All spatial movement freezes and a WASD
