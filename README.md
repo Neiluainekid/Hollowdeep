@@ -109,6 +109,27 @@ Ten enemy types, each built around the parry/dodge read:
 | **Revenant** | fast slash on a 1s rhythm · **overhead** |
 | **Ironclad** | bash · **crush**. Takes 70% less damage from the front — parry it or get behind it |
 | **Hollow Wraith** | homing orb · **rend**, and it walks through walls |
+| **Tridon's Curse** | no attacks at all — it runs at you and detonates. A kaboom icon overhead flashes faster as the fuse burns, and killing a lit one only sets it off early |
+
+## Bosses
+
+Three, all at **3000 HP** with a **1.5x damage multiplier** on top of normal
+region scaling, each with a named health bar:
+
+| | Map | Character |
+|---|---|---|
+| **Flowery** — *The Bloom That Watches* | Tripolisis | A flora miniboss: petals, summons and area denial |
+| **The Sun God** — *Predicament King* | Sarapolis | A corona of rays; relentless ranged pressure |
+| **Judgement** — *Pure Devastation* | Sarapolis (final) | Clenched fists and almost nothing but charges |
+
+### The rhythm break
+
+**Parrying a boss stops the world.** All spatial movement freezes and a WASD
+prompt sequence opens — 4 beats, rising to 6 in later phases, each on a 0.75s
+timer with a closing ring. Hit the beats and the boss eats 3% of its maximum
+health per beat landed, 1.5x for a clean run, on top of the parry's stagger
+multiplier — a perfect break removes about 29% of a boss. Miss them all and
+you get nothing but the ordinary parry. Either way you leave with full energy.
 
 ## Combat: read the colour
 

@@ -228,6 +228,7 @@ class Game {
     this.saveTimer = 0;
     this.freezeT = 0;
     this.tempestT = 0;
+    this.rhythm = null;
     this.saveSlot = Save.SLOT_FIRST;   // 1..3, chosen on the title screen
     this.mapNumber = Maps.FIRST;   // 1-based
     this.mapSeeds = [];           // dense, addressed via Seq
@@ -277,6 +278,13 @@ class Game {
     };
 
     window.addEventListener('keydown', (e) => {
+      // While the rhythm break is up, WASD is the minigame, not movement.
+      if (this.rhythm && !this.rhythm.done && !e.repeat
+          && ['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(e.code)) {
+        this.rhythmKey(e.code);
+        e.preventDefault();
+        return;
+      }
       if (e.code in keyMap) { this.input[keyMap[e.code]] = 1; e.preventDefault(); }
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { this.input.dash = true; e.preventDefault(); }
       if (e.code === 'Space' && !e.repeat) { this.input.parry = true; this.input.parryPressed = true; e.preventDefault(); }
@@ -382,6 +390,7 @@ class Game {
     this.bossActive = false;
     this.bossDefeated = false;
     this.boss = null;
+    this.rhythm = null;
     this.gateFound = false;
     this.currentRoom = null;
     this.pendingLevelUps = 0;
@@ -508,6 +517,164 @@ class Game {
     if (this.tempestT <= 0) document.getElementById('stage').classList.remove('tempest');
   }
 
+  /* ---------------- boss parry: the rhythm break ----------------
+     Parrying a boss doesn't just stagger it — it stops the world. All spatial
+     movement freezes and a WASD prompt sequence opens. Hit the beats and the
+     boss eats a punish scaled to how many you landed; miss and you get
+     nothing but the ordinary parry. */
+
+  startRhythm(boss) {
+    const beats = 4 + Math.min(2, boss.phase - 1);      // 4..6
+    const keys = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
+    const glyph = { KeyW: 'W', KeyA: 'A', KeyS: 'S', KeyD: 'D' };
+    this.rhythm = {
+      boss,
+      // 1-based beat numbering, like every other authored sequence here.
+      beats: Seq.range(Seq.FIRST, beats).map(() => {
+        const k = U.pick(keys);
+        return { code: k, glyph: glyph[k], state: 'pending' };
+      }),
+      current: Seq.FIRST,
+      t: 0,
+      window: 0.75,        // seconds per beat
+      hits: 0,
+      done: false,
+      outT: 0,
+    };
+    this.fx.addFlash('#ffffff', 0.4);
+    this.fx.addShake(10);
+    this.audio.parryHit();
+    this.toast('The world holds. Break the rhythm.', 2);
+  }
+
+  rhythmKey(code) {
+    const r = this.rhythm;
+    if (!r || r.done) return;
+    const beat = Seq.get(r.beats, r.current);
+    if (!beat) return;
+    if (code === beat.code) {
+      beat.state = 'hit';
+      r.hits++;
+      this.audio.blip(880 + r.hits * 120, 0.09, 0.11, 'triangle');
+      this.fx.addFlash('#8fd4ff', 0.12);
+    } else {
+      beat.state = 'miss';
+      this.audio.blip(150, 0.14, 0.1, 'sawtooth');
+    }
+    this.advanceRhythm();
+  }
+
+  advanceRhythm() {
+    const r = this.rhythm;
+    r.t = 0;
+    r.current++;
+    if (r.current > Seq.last(r.beats)) this.finishRhythm();
+  }
+
+  finishRhythm() {
+    const r = this.rhythm;
+    r.done = true;
+    r.outT = 1.1;
+    const b = r.boss;
+    const total = r.beats.length;
+    const perfect = r.hits === total;
+
+    if (b && !b.dead && r.hits > 0) {
+      /* 3% of max health per beat, 1.5x on a clean run. Note the boss is
+         already staggered from the parry that opened this, so PARRY.vuln
+         multiplies whatever lands here — at 6% a perfect break was removing
+         three quarters of a 3000 HP boss in one exchange. */
+      const dmg = b.maxHp * 0.03 * r.hits * (perfect ? 1.5 : 1);
+      b.takeDamage(dmg, this, this.player.x, this.player.y, 0, perfect);
+      b.stun = Math.max(b.stun, perfect ? 2.4 : 1.4);
+      b.stagger = Math.max(b.stagger, perfect ? 2.4 : 1.4);
+      this.fx.addShake(perfect ? 22 : 12);
+      this.fx.addFlash(perfect ? '#ffffff' : '#8fd4ff', perfect ? 0.5 : 0.25);
+      this.audio.explode();
+    }
+    this.player.energy = this.player.maxEnergy;
+    if (this.player.usesMana) this.player.mana = this.player.maxMana;
+    this.toast(perfect ? 'PERFECT BREAK' : `${r.hits} of ${total} landed`, 2.5);
+  }
+
+  updateRhythm(dt) {
+    const r = this.rhythm;
+    if (!r) return true;                 // no minigame: world runs normally
+    if (r.done) {
+      r.outT -= dt;
+      if (r.outT <= 0) this.rhythm = null;
+      return false;
+    }
+    r.t += dt;
+    if (r.t >= r.window) {
+      Seq.get(r.beats, r.current).state = 'miss';
+      this.audio.blip(150, 0.14, 0.08, 'sawtooth');
+      this.advanceRhythm();
+    }
+    return false;                        // world stays frozen
+  }
+
+  drawRhythm(ctx) {
+    const r = this.rhythm;
+    if (!r) return;
+    const cx = this.vw / 2, cy = this.vh / 2;
+    const n = r.beats.length;
+    const gap = 76;
+    const x0 = cx - ((n - 1) * gap) / 2;
+
+    ctx.save();
+    ctx.globalAlpha = r.done ? U.clamp(r.outT, 0, 1) * 0.55 : 0.55;
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(0, 0, this.vw, this.vh);
+    ctx.globalAlpha = r.done ? U.clamp(r.outT, 0, 1) : 1;
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(240,230,210,.75)';
+    ctx.font = '600 12px system-ui';
+    ctx.fillText('BREAK THE RHYTHM', cx, cy - 74);
+
+    Seq.each(r.beats, (beat, number) => {
+      const x = x0 + (number - Seq.FIRST) * gap;
+      const active = !r.done && number === r.current;
+      const size = active ? 34 : 27;
+
+      ctx.strokeStyle = beat.state === 'hit' ? '#8fd4ff'
+        : beat.state === 'miss' ? '#c8452f'
+        : active ? '#ffffff' : 'rgba(255,255,255,.22)';
+      ctx.lineWidth = active ? 3 : 2;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x - size, cy - size, size * 2, size * 2, 8)
+        : ctx.rect(x - size, cy - size, size * 2, size * 2);
+      ctx.stroke();
+
+      if (beat.state === 'hit') {
+        ctx.fillStyle = 'rgba(143,212,255,.18)';
+        ctx.fill();
+      }
+
+      // Timing ring on the live beat.
+      if (active) {
+        const left = 1 - U.clamp(r.t / r.window, 0, 1);
+        ctx.strokeStyle = left > 0.35 ? '#8fd4ff' : '#ffb347';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(x, cy, size + 13, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = beat.state === 'hit' ? '#8fd4ff'
+        : beat.state === 'miss' ? '#c8452f'
+        : active ? '#ffffff' : 'rgba(255,255,255,.35)';
+      ctx.font = `700 ${active ? 30 : 24}px system-ui`;
+      ctx.fillText(beat.glyph, x, cy + (active ? 11 : 9));
+    });
+
+    ctx.fillStyle = 'rgba(240,230,210,.5)';
+    ctx.font = '11px system-ui';
+    ctx.fillText(r.done ? `${r.hits} / ${n}` : 'press the key shown', cx, cy + 78);
+    ctx.restore();
+  }
+
   /* Reading an attack correctly should feel loud. A parry refunds energy,
      opens the attacker, and stops the hit dead. */
   onParry(p, opts) {
@@ -530,6 +697,12 @@ class Game {
 
     const src = opts.source;
     if (src && !src.dead && !opts.projectile) src.onParried(this);
+
+    // Parrying a boss stops the world and opens the rhythm break.
+    if (src && !src.dead && src.def && src.def.boss) {
+      this.startRhythm(src);
+      return;
+    }
 
     /* Perfect Parry — a 1-in-20 execution. Bosses are never eligible: a
        lottery ending a set-piece fight would gut it. */
@@ -1098,6 +1271,13 @@ class Game {
     if (this.state !== 'playing') { this.fx.update(dt); return; }
     this.updateRoulette(dt);
     this.updateTempest(dt);
+    // The rhythm break halts all spatial movement while it is up.
+    if (this.rhythm) {
+      this.updateRhythm(dt);
+      this.fx.update(dt);
+      this.updateHud();
+      return;
+    }
     // Impact frames: hold the whole simulation for a beat on a heavy hit.
     if (this.freezeT > 0) {
       this.freezeT = Math.max(0, this.freezeT - dt);
@@ -1803,8 +1983,10 @@ class Game {
         }
         ctx.quadraticCurveTo(x - e.radius, y, x, y - e.radius);
         ctx.fill();
+      } else if (e.def.palette) {
+        this.drawBossForm(ctx, e, x, y, body);
       } else {
-        // brute / skeleton / boss — blocky silhouette
+        // brute / skeleton — blocky silhouette
         const w = e.radius * 1.5, h = e.radius * 1.9;
         ctx.fillRect(x - w / 2, y - h / 2, w, h);
         ctx.fillStyle = e.flash > 0 ? '#fff' : e.def.dark;
@@ -1837,6 +2019,34 @@ class Game {
         ctx.textAlign = 'center';
         ctx.fillText('ELITE', x, y - e.radius - 18);
       }
+      // Tridon's Curse advertises itself: a kaboom icon that flashes faster
+      // as the fuse burns down.
+      if (e.def.kaboom && !e.dead) {
+        const lit = e.lit;
+        const blink = lit ? Math.sin(this.time * 34) > -0.2 : true;
+        if (blink) {
+          ctx.save();
+          ctx.globalAlpha = lit ? 1 : 0.8;
+          ctx.font = `700 ${lit ? 20 : 15}px system-ui`;
+          ctx.textAlign = 'center';
+          ctx.fillStyle = lit ? '#ffd479' : '#ff8a3c';
+          ctx.shadowBlur = lit ? 14 : 6;
+          ctx.shadowColor = '#ff8a3c';
+          ctx.fillText('💥', x, y - e.radius - 16);
+          ctx.restore();
+        }
+        if (lit) {
+          ctx.save();
+          ctx.globalAlpha = 0.35 + Math.sin(this.time * 26) * 0.2;
+          ctx.strokeStyle = '#ff8a3c';
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(x, y, e.def.suicide.radius * 0.55, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
       // Shrine guardians wear a mark, so you can tell which of the enemies in
       // the room are the ones actually holding the shrine open.
       if (e.guardian && !e.guardian.used) {
@@ -1856,6 +2066,68 @@ class Game {
   /* The read. A ring closes toward the enemy as the wind-up completes — it
      touches the body exactly when the hit lands, so timing is judged by
      distance rather than by counting frames. Blue can be parried, red cannot. */
+  /* The three Update 2.0 bosses get real silhouettes rather than the shared
+     blocky one — a corona, a bloom, and a pair of fists. */
+  drawBossForm(ctx, e, x, y, body) {
+    const r = e.radius;
+    const t = this.time;
+    ctx.save();
+    if (e.def.palette === 'sun') {
+      // Corona of rays around a burning core.
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = '#ff9a2e';
+      for (let i = 0; i < 12; i++) {
+        const a = t * 0.6 + (i / 12) * Math.PI * 2;
+        const len = r * (1.5 + Math.sin(t * 3 + i) * 0.22);
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * r * 0.85, y + Math.sin(a) * r * 0.85);
+        ctx.lineTo(x + Math.cos(a + 0.13) * len, y + Math.sin(a + 0.13) * len);
+        ctx.lineTo(x + Math.cos(a - 0.13) * len, y + Math.sin(a - 0.13) * len);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = body;
+      ctx.beginPath(); ctx.arc(x, y, r * 0.9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff3c4';
+      ctx.beginPath(); ctx.arc(x, y, r * 0.45, 0, Math.PI * 2); ctx.fill();
+
+    } else if (e.def.palette === 'flora') {
+      // Petals around a dark eye, swaying.
+      const sway = Math.sin(t * 1.6) * 0.12;
+      ctx.fillStyle = '#4e8f3c';
+      for (let i = 0; i < 8; i++) {
+        const a = sway + (i / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.ellipse(x + Math.cos(a) * r * 0.95, y + Math.sin(a) * r * 0.95,
+          r * 0.55, r * 0.3, a, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = body;
+      ctx.beginPath(); ctx.arc(x, y, r * 0.72, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#1d2f16';
+      ctx.beginPath(); ctx.arc(x, y, r * 0.34, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#c8f0a0';
+      ctx.beginPath(); ctx.arc(x - r * 0.1, y - r * 0.1, r * 0.13, 0, Math.PI * 2); ctx.fill();
+
+    } else {
+      // Judgement: a torso and two oversized fists that wind with the attack.
+      const swing = e.atk || e.state === 'chargeWind' || e.state === 'charging' ? 1 : 0;
+      const reach = r * (0.95 + swing * 0.5);
+      ctx.fillStyle = body;
+      ctx.fillRect(x - r * 0.5, y - r * 0.95, r, r * 1.9);
+      ctx.beginPath(); ctx.arc(x, y - r * 1.1, r * 0.42, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#cfc7b8';
+      for (const side of [-1, 1]) {
+        const fx2 = x + side * reach, fy2 = y + Math.sin(t * 4 + side) * 3;
+        ctx.beginPath(); ctx.arc(fx2, fy2, r * 0.52, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x + side * r * 0.45, y - r * 0.2);
+        ctx.lineTo(fx2, fy2); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   drawTelegraph(ctx, e, x, y, kind, progress, atk) {
     // A braced Tanker sees no red: the shield makes everything parryable,
     // so the indicator has to say so before the blow lands, not after.
@@ -2095,22 +2367,43 @@ class Game {
       ctx.globalAlpha = 1;
     }
 
-    // Boss health bar
+    /* Dedicated boss bar. Every boss gets one, named and titled, with a
+       lagging "damage taken" ghost behind the fill so big hits read. */
     if (this.boss && !this.boss.dead) {
-      const w = Math.min(560, this.vw * 0.55), h = 15;
-      const x = (this.vw - w) / 2, y = this.vh - 74;
-      ctx.fillStyle = 'rgba(0,0,0,.72)';
-      ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-      ctx.fillStyle = '#c8452f';
-      ctx.fillRect(x, y, w * (this.boss.hp / this.boss.maxHp), h);
-      ctx.strokeStyle = 'rgba(226,179,74,.5)';
+      const b = this.boss;
+      const w = Math.min(620, this.vw * 0.58), h = 17;
+      const x = (this.vw - w) / 2, y = this.vh - 78;
+      const frac = U.clamp(b.hp / b.maxHp, 0, 1);
+      b.barGhost = b.barGhost === undefined ? frac : U.damp(b.barGhost, frac, 0.06, 1 / 60);
+
+      ctx.fillStyle = 'rgba(0,0,0,.78)';
+      ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
+      ctx.fillStyle = 'rgba(255,220,180,.35)';
+      ctx.fillRect(x, y, w * b.barGhost, h);
+      const col = b.def.palette === 'sun' ? '#ffc24d'
+        : b.def.palette === 'flora' ? '#7fd66a'
+        : b.def.palette === 'fist' ? '#e8e2d4' : '#c8452f';
+      ctx.fillStyle = col;
+      ctx.fillRect(x, y, w * frac, h);
+      ctx.strokeStyle = 'rgba(226,179,74,.55)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.strokeRect(x - 3, y - 3, w + 6, h + 6);
+
+      // Phase ticks
+      ctx.fillStyle = 'rgba(0,0,0,.55)';
+      for (const t of [0.3, 0.62]) ctx.fillRect(x + w * t, y, 2, h);
+
       ctx.fillStyle = '#f0e6d2';
-      ctx.font = '600 12px system-ui';
+      ctx.font = '600 13px system-ui';
       ctx.textAlign = 'center';
-      ctx.fillText(`THE HOLLOW WARDEN — PHASE ${this.boss.phase}`, this.vw / 2, y - 8);
+      const title = b.def.title ? ` — ${b.def.title.toUpperCase()}` : '';
+      ctx.fillText(`${b.def.name.toUpperCase()}${title}`, this.vw / 2, y - 16);
+      ctx.font = '600 10px system-ui';
+      ctx.fillStyle = 'rgba(240,230,210,.6)';
+      ctx.fillText(`PHASE ${b.phase}  ·  ${Math.ceil(b.hp)} / ${b.maxHp}`, this.vw / 2, y - 4);
     }
+
+    this.drawRhythm(ctx);
 
     /* Shrine fight banner. It sits above the boss bar's slot and mirrors it,
        because it is the same kind of commitment: a fight you have started and

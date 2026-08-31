@@ -882,9 +882,42 @@ const ENEMY_TYPES = {
     ],
   },
 
+  /* Tridon's Curse — no attacks at all. It simply runs at you and detonates,
+     so the counterplay is spacing and killing it at range, not reading a
+     telegraph. The kaboom icon overhead is the warning. */
+  tridon: {
+    name: "Tridon's Curse", hp: 44, speed: 122, radius: 13, xp: 18, gold: 8,
+    ai: 'chase', color: '#ff8a3c', dark: '#5c2a10',
+    suicide: { damage: 34, radius: 116, fuse: 0.45 },
+    kaboom: true,
+    attacks: [],
+  },
+
   warden: {
     name: 'The Hollow Warden', hp: 900, speed: 58, radius: 34, xp: 400, gold: 300,
     ai: 'boss', color: '#c8452f', dark: '#3d1712', boss: true,
+  },
+
+  /* ---------------- Update 2.0 bosses ----------------
+     All three share the headline numbers: 3000 HP and a 1.5x damage
+     multiplier. Their movesets are what separate them. */
+  sungod: {
+    name: 'The Sun God', hp: 3000, speed: 52, radius: 36, xp: 700, gold: 500,
+    ai: 'boss', color: '#ffc24d', dark: '#6b3a08', boss: true,
+    bossDmgMul: 1.5, palette: 'sun',
+    title: 'Predicament King',
+  },
+  flowery: {
+    name: 'Flowery', hp: 3000, speed: 40, radius: 40, xp: 700, gold: 500,
+    ai: 'boss', color: '#7fd66a', dark: '#264a1c', boss: true,
+    bossDmgMul: 1.5, palette: 'flora',
+    title: 'The Bloom That Watches',
+  },
+  judgement: {
+    name: 'Judgement', hp: 3000, speed: 74, radius: 34, xp: 700, gold: 500,
+    ai: 'boss', color: '#e8e2d4', dark: '#3a3630', boss: true,
+    bossDmgMul: 1.5, palette: 'fist',
+    title: 'Pure Devastation',
   },
 };
 
@@ -902,7 +935,7 @@ class Enemy {
     const scale = 1 + tier * 0.34;
     this.maxHp = Math.round(t.hp * scale * (elite ? 2.1 : 1));
     this.hp = this.maxHp;
-    this.dmgScale = (1 + tier * 0.26) * (elite ? 1.35 : 1);
+    this.dmgScale = (1 + tier * 0.26) * (elite ? 1.35 : 1) * (t.bossDmgMul || 1);
     this.speed = t.speed * (elite ? 0.92 : 1);
     this.xpValue = Math.round(t.xp * (1 + tier * 0.3) * (elite ? 2.4 : 1));
     this.goldValue = Math.round(t.gold * (1 + tier * 0.4) * (elite ? 3 : 1));
@@ -925,6 +958,8 @@ class Enemy {
     this.bob = U.rand(0, 10);
     this.phase = 1;
     this.moveAngle = U.rand(0, Math.PI * 2);
+    this.fuse = 0;         // Tridon's Curse: lit, and counting down
+    this.lit = false;
     this.face = 0;         // which way it is turned — matters for shields
     this.room = null;      // set by the spawner, so a cleared room stays cleared
     this._q = [];
@@ -939,6 +974,40 @@ class Enemy {
     this.atk = null;
     this.vx *= 0.2; this.vy *= 0.2;
     game.fx.text(this.x, this.y - this.radius - 20, 'STAGGERED', '#8fd4ff', 13);
+  }
+
+  /* Goes off in a circle. Unblockable by nature — there is no wind-up to
+     read, only distance to keep. Split from `detonate` so that dying with a
+     lit fuse produces the same blast without recursing back into die(). */
+  blast(game) {
+    const s = this.def.suicide;
+    const p = game.player;
+    game.fx.ring(this.x, this.y, s.radius * 0.6, '#ff8a3c', 44);
+    game.fx.spark(this.x, this.y, {
+      count: 46, color: ['#ff8a3c', '#ffd479', '#ffffff'],
+      speedMax: 460, lifeMax: 0.9, sizeMax: 6,
+    });
+    game.fx.addShake(14);
+    game.impactFreeze(0.06);
+    game.audio.explode();
+    if (p && !p.dead && U.dist(this.x, this.y, p.x, p.y) < s.radius) {
+      p.takeHit(s.damage * this.dmgScale, game, {
+        x: this.x, y: this.y, kind: 'red', source: this,
+      });
+    }
+    for (const o of game.enemyHash.query(this.x, this.y, s.radius, this._q)) {
+      if (o === this || o.dead || U.dist(this.x, this.y, o.x, o.y) > s.radius) continue;
+      o.takeDamage(s.damage * 0.5, game, this.x, this.y, 220, false);
+    }
+  }
+
+  detonate(game) {
+    if (this.dead) return;
+    this.fuse = 0;
+    this.lit = false;      // so die() does not fire a second blast
+    this.hp = 0;
+    this.blast(game);
+    this.die(game);
   }
 
   takeDamage(n, game, srcX, srcY, knock = 0, crit = false) {
@@ -981,7 +1050,13 @@ class Enemy {
   }
 
   die(game) {
+    if (this.dead) return;
     this.dead = true;
+    // Killing a lit Curse does not defuse it — it just sets it off early.
+    if (this.def.suicide && this.lit) {
+      this.lit = false;
+      this.blast(game);
+    }
     // A room the player emptied stays empty across a save/resume.
     if (this.room) {
       this.room.alive = Math.max(0, (this.room.alive || 0) - 1);
@@ -1047,6 +1122,20 @@ class Enemy {
       this.applySeparation(game, (v) => { ax += v.x; ay += v.y; });
       this.integrate(dt, game, ax, ay);
       return;
+    }
+
+    /* Tridon's Curse: contact lights the fuse, and once lit nothing stops it.
+       Killing it early is the counterplay, so the fuse keeps burning even
+       through a stagger. */
+    if (this.def.suicide) {
+      if (this.lit) {
+        this.fuse -= dt;
+        if (this.fuse <= 0) { this.detonate(game); return; }
+      } else if (d < this.radius + p.radius + 6) {
+        this.lit = true;
+        this.fuse = this.def.suicide.fuse;
+        game.audio.telegraph('red');
+      }
     }
 
     if (this.stun > 0 || this.stagger > 0) {
@@ -1313,12 +1402,20 @@ class Enemy {
     } else {
       ax = Math.cos(ang) * this.speed;
       ay = Math.sin(ang) * this.speed;
-      const gap = this.phase === 3 ? 1.5 : this.phase === 2 ? 2.1 : 2.8;
+      const gap = (this.phase === 3 ? 1.5 : this.phase === 2 ? 2.1 : 2.8) * (this.def.palette ? 0.85 : 1);
       if (this.stateT > gap) {
         this.stateT = 0;
         const moves = ['slamWind', 'chargeWind'];
         if (this.phase >= 2) moves.push('summon');
         if (this.phase >= 3) moves.push('spiral', 'spiral');
+        /* Each Update 2.0 boss weights the shared pool differently, which is
+           what makes them feel distinct without three separate brains:
+             sun    — relentless ranged pressure, the "predicament"
+             flora  — summons and area denial, slow and rooted
+             fist   — almost nothing but charges. Pure devastation. */
+        if (this.def.palette === 'sun') moves.push('spiral', 'slamWind');
+        else if (this.def.palette === 'flora') moves.push('summon', 'summon', 'slamWind');
+        else if (this.def.palette === 'fist') moves.push('chargeWind', 'chargeWind', 'chargeWind');
         const pickMove = d < 170 ? 'slamWind' : U.pick(moves);
         if (pickMove === 'summon') {
           for (let i = 0; i < (this.phase === 3 ? 4 : 3); i++) {

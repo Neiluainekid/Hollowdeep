@@ -18,10 +18,14 @@ const MAPS = [
     w: 152, h: 152,
     roomTarget: 46,
     threatBias: 0,
-    bossType: 'warden',
-    bossName: 'The Hollow Warden',
-    bossHp: 1100,
-    gateLine: "The Warden's Gate. Press E when you are ready.",
+    // 1-based boss table. Entry 1 is the gate boss for this map.
+    bosses: [
+      { number: 1, type: 'flowery', name: 'Flowery', hp: 3000 },
+    ],
+    bossType: 'flowery',
+    bossName: 'Flowery',
+    bossHp: 3000,
+    gateLine: 'The Bloom That Watches. Press E when you are ready.',
     intro: 'Tripolisis — Dungeon of Chaos',
     regions: [
       { name: 'Entry Halls', floor: '#4c4657', wall: '#15121b', accent: '#665c73' },
@@ -34,8 +38,8 @@ const MAPS = [
     tables: [
       ['slime', 'slime', 'bat'],
       ['slime', 'bat', 'bat', 'skeleton', 'spitter'],
-      ['bat', 'skeleton', 'spitter', 'brute', 'revenant'],
-      ['skeleton', 'crossbow', 'brute', 'revenant', 'wraith', 'spitter'],
+      ['bat', 'skeleton', 'spitter', 'brute', 'revenant', 'tridon'],
+      ['skeleton', 'crossbow', 'brute', 'revenant', 'wraith', 'tridon'],
       ['crossbow', 'brute', 'wraith', 'revenant', 'ironclad', 'mortar'],
       ['wraith', 'ironclad', 'mortar', 'revenant', 'crossbow', 'brute'],
     ],
@@ -51,10 +55,17 @@ const MAPS = [
     w: 168, h: 168,
     roomTarget: 52,
     threatBias: 2,          // picks up where Tripolisis left off
-    bossType: 'warden',
-    bossName: 'The Hollow Warden',
-    bossHp: 2400,
-    gateLine: 'The gate of the ruined city. Press E when you are ready.',
+    bosses: [
+      { number: 1, type: 'sungod', name: 'The Sun God', hp: 3000 },
+      { number: 2, type: 'judgement', name: 'Judgement', hp: 3000 },
+    ],
+    bossType: 'sungod',
+    bossName: 'The Sun God',
+    bossHp: 3000,
+    // Sarapolis ends with a second fight: beat the Sun God and Judgement
+    // steps out of the wreckage.
+    finalBoss: { type: 'judgement', name: 'Judgement', hp: 3000 },
+    gateLine: 'The Predicament King waits. Press E when you are ready.',
     intro: 'Sarapolis — Dungeon of Devastation',
     regions: [
       { name: 'The Cinder Gate', floor: '#584038', wall: '#1c1210', accent: '#78503f' },
@@ -66,8 +77,8 @@ const MAPS = [
     ],
     tables: [
       ['skeleton', 'spitter', 'revenant', 'brute'],
-      ['spitter', 'crossbow', 'revenant', 'wraith', 'brute'],
-      ['crossbow', 'revenant', 'ironclad', 'wraith', 'mortar'],
+      ['spitter', 'crossbow', 'revenant', 'wraith', 'tridon'],
+      ['crossbow', 'revenant', 'ironclad', 'wraith', 'mortar', 'tridon'],
       ['ironclad', 'mortar', 'revenant', 'wraith', 'crossbow'],
       ['ironclad', 'mortar', 'wraith', 'revenant', 'ironclad'],
       ['ironclad', 'wraith', 'mortar', 'revenant', 'ironclad'],
@@ -86,5 +97,15 @@ const Maps = {
   isLast(n) { return n >= this.LAST; },
   next(n) { return Math.min(this.LAST, n + 1); },
   numbers() { return Seq.range(Seq.FIRST, MAPS.length); },
+
+  // Bosses are addressed 1-based within their map's table.
+  boss(mapNumber, bossNumber = Seq.FIRST) {
+    const m = this.byNumber(mapNumber);
+    return m.bosses ? Seq.get(m.bosses, Seq.clampTo(m.bosses, bossNumber)) : null;
+  },
+  bossCount(mapNumber) {
+    const m = this.byNumber(mapNumber);
+    return m.bosses ? m.bosses.length : 0;
+  },
 };
 
