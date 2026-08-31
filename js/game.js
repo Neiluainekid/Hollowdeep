@@ -156,6 +156,23 @@ class Audio2 {
     this.explode();
   }
 
+  // Rising yelp per bounce, with the shout on the finisher.
+  jaronaHit(n, final) {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'square';
+    const base = 260 + n * 110;
+    osc.frequency.setValueAtTime(base, t);
+    osc.frequency.exponentialRampToValueAtTime(base * (final ? 3 : 1.7), t + (final ? 0.2 : 0.1));
+    g.gain.setValueAtTime(final ? 0.15 : 0.09, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + (final ? 0.26 : 0.13));
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t); osc.stop(t + 0.28);
+    this.impact(final);
+  }
+
   slingShot(tier, heavy = false) {
     if (tier > 0) {
       // Assault rifle: a crack with a tail, not an elastic snap.
@@ -209,12 +226,15 @@ class Game {
 
     this.hudCache = {};        // last written HUD values, to avoid DOM churn
     this.saveTimer = 0;
-    this.mapIndex = 0;
-    this.mapSeeds = [];
+    this.freezeT = 0;
+    this.tempestT = 0;
+    this.saveSlot = Save.SLOT_FIRST;   // 1..3, chosen on the title screen
+    this.mapNumber = Maps.FIRST;   // 1-based
+    this.mapSeeds = [];           // dense, addressed via Seq
     this.minions = [];
     this.zones = [];
     this.impacts = [];
-    this.roulette = { open: false, held: 0, index: 0 };
+    this.roulette = { open: false, held: 0, slot: Seq.FIRST };
 
     this.bindEvents();
     this.resize();
@@ -303,8 +323,9 @@ class Game {
      `resume` rebuilds one from disk; `loadMap` swaps the world underneath a
      player who carries across. */
 
-  start(classId, seedText) {
+  start(classId, seedText, slot = Save.SLOT_FIRST) {
     this.audio.resume();
+    this.saveSlot = Save.validSlot(slot) ? slot : Save.SLOT_FIRST;
     const base = seedText && seedText.trim()
       ? U.hashSeed(seedText.trim())
       : (Math.random() * 0xffffffff) >>> 0;
@@ -316,19 +337,19 @@ class Game {
     this.player = null;
     this.pendingClassId = classId;
 
-    Save.clearRun();
+    Save.clearRun(this.saveSlot);
     Save.updateMeta(m => {
       m.runs++;
       if (!m.classesPlayed.includes(classId)) m.classesPlayed.push(classId);
     });
 
-    this.loadMap(0, { fresh: true });
+    this.loadMap(Maps.FIRST, { fresh: true });
     this.toast(`${this.player.weaponName} — ${this.player.cls.className}. ${this.player.cls.blurb}`, 4.5);
   }
 
-  loadMap(index, opts = {}) {
-    this.mapIndex = U.clamp(index, 0, MAPS.length - 1);
-    const def = MAPS[this.mapIndex];
+  loadMap(number, opts = {}) {
+    this.mapNumber = Seq.clampTo(MAPS, number);
+    const def = Maps.byNumber(this.mapNumber);
 
     // Drop the previous world wholesale so two maps never sit in memory at once.
     this.enemies = [];
@@ -338,7 +359,7 @@ class Game {
     this.zones = [];
     this.impacts = [];
     this.fx.clear();
-    this.dungeon = new Dungeon(this.mapSeeds[this.mapIndex], def);
+    this.dungeon = new Dungeon(Seq.get(this.mapSeeds, this.mapNumber), def);
     this.exploreCanvas = null;    // rebuilt lazily at the new map's size
 
     if (opts.fresh) {
@@ -353,7 +374,7 @@ class Game {
     this.player.vx = this.player.vy = 0;
 
     // Each map hands out that map's weapon tier.
-    const promoted = this.player.setWeaponTier(this.mapIndex, opts.fresh ? null : this);
+    const promoted = this.player.setWeaponTier(this.mapNumber, opts.fresh ? null : this);
 
     this.propHash.rebuild(this.dungeon.props);
     this.cam.x = this.player.x - this.vw / 2;
@@ -401,12 +422,13 @@ class Game {
     d.rooms.forEach((r, i) => { if (r.cleared) cleared.push(i); });
 
     return {
-      v: 1,
+      v: Save.VERSION,
       savedAt: Date.now(),
       elapsed: this.time,
       seedText: this.seedText,
       baseSeed: this.baseSeed,
-      mapIndex: this.mapIndex,
+      slot: this.saveSlot,
+      mapNumber: this.mapNumber,
       player: this.player.serialize(),
       world: {
         usedProps,
@@ -419,11 +441,12 @@ class Game {
 
   saveNow() {
     if (this.state === 'end' || !this.player || this.player.dead) return;
-    Save.writeRun(this.captureSave());
+    Save.writeRun(this.saveSlot, this.captureSave());
   }
 
-  resume(data) {
+  resume(data, slot = Save.SLOT_FIRST) {
     this.audio.resume();
+    this.saveSlot = Save.validSlot(slot) ? slot : Save.SLOT_FIRST;
     this.seedText = data.seedText;
     this.baseSeed = data.baseSeed >>> 0;
     this.mapSeeds = MAPS.map(m => (this.baseSeed ^ m.seedSalt) >>> 0);
@@ -431,7 +454,7 @@ class Game {
     this.runStart = performance.now() - this.time * 1000;
 
     const player = Player.restore(data.player);
-    this.loadMap(data.mapIndex || 0, { player, keepPosition: true, silent: true });
+    this.loadMap(data.mapNumber || Maps.FIRST, { player, keepPosition: true, silent: true });
 
     // Re-apply the deltas on top of the regenerated world.
     const w = data.world || {};
@@ -447,9 +470,9 @@ class Game {
     }
 
     // Consumed on load: you may suspend a run, but you may not rewind a death.
-    Save.clearRun();
+    Save.clearRun(this.saveSlot);
 
-    const def = MAPS[this.mapIndex];
+    const def = Maps.byNumber(this.mapNumber);
     this.toast(`${def.name} — ${def.subtitle}. Your run continues.`, 4.5);
   }
 
@@ -461,6 +484,28 @@ class Game {
     void el.offsetWidth;
     el.style.animation = '';
     this.toastT = dur;
+  }
+
+  /* ---------------- Update 2.0 game-feel primitives ---------------- */
+
+  /* Impact frames: a couple of frames of held time on a heavy connection.
+     `update` scales dt to zero while this runs, so animation and physics
+     both stop dead — that pause is what sells weight. */
+  impactFreeze(seconds = 0.06) {
+    this.freezeT = Math.max(this.freezeT || 0, seconds);
+  }
+
+  /* Screen-level weather for the Mage's Air heavy: a CSS blur/darken on the
+     canvas wrapper rather than a canvas effect, so it costs nothing to draw. */
+  tempest(seconds = 1.2) {
+    this.tempestT = Math.max(this.tempestT || 0, seconds);
+    document.getElementById('stage').classList.add('tempest');
+  }
+
+  updateTempest(dt) {
+    if (!this.tempestT) return;
+    this.tempestT = Math.max(0, this.tempestT - dt);
+    if (this.tempestT <= 0) document.getElementById('stage').classList.remove('tempest');
   }
 
   /* Reading an attack correctly should feel loud. A parry refunds energy,
@@ -479,12 +524,32 @@ class Game {
       count: 20, color: ['#ffffff', '#8fd4ff', '#cfe4ff'], dir: a, spread: 1.2,
       speedMax: 320, lifeMax: 0.5, sizeMax: 4,
     });
-    this.fx.text(p.x, p.y - 44, 'PARRY', '#8fd4ff', 20);
     this.fx.addShake(6);
     this.fx.addFlash('#8fd4ff', 0.16);
     this.audio.parryHit();
 
-    if (opts.source && !opts.source.dead && !opts.projectile) opts.source.onParried(this);
+    const src = opts.source;
+    if (src && !src.dead && !opts.projectile) src.onParried(this);
+
+    /* Perfect Parry — a 1-in-20 execution. Bosses are never eligible: a
+       lottery ending a set-piece fight would gut it. */
+    const executable = src && !src.dead && src.takeDamage && !src.def?.boss;
+    if (executable && U.randi(1, PARRY.perfectOdds + 1) === Seq.FIRST) {
+      this.fx.text(p.x, p.y - 44, 'PERFECT PARRY', '#ffffff', 24);
+      this.fx.text(src.x, src.y - 40, 'EXECUTED', '#8fd4ff', 18);
+      this.fx.ring(src.x, src.y, src.radius * 1.6, '#ffffff', 40);
+      this.fx.spark(src.x, src.y, {
+        count: 40, color: ['#ffffff', '#8fd4ff'], speedMax: 420, lifeMax: 0.8, sizeMax: 5,
+      });
+      this.impactFreeze(0.11);
+      this.fx.addShake(14);
+      this.fx.addFlash('#ffffff', 0.35);
+      this.audio.freeze();
+      src.takeDamage(src.hp + 9999, this, p.x, p.y, 0, true);
+      p.perfectParries = (p.perfectParries || 0) + 1;
+    } else {
+      this.fx.text(p.x, p.y - 44, 'PARRY', '#8fd4ff', 20);
+    }
   }
 
   onDodge(p, opts) {
@@ -503,7 +568,7 @@ class Game {
   }
 
   onBossDefeated() {
-    const def = MAPS[this.mapIndex];
+    const def = Maps.byNumber(this.mapNumber);
     this.bossActive = false;
     this.bossDefeated = true;
     this.dungeon.sealed = false;
@@ -512,7 +577,7 @@ class Game {
       if (!m.bossesFelled.includes(def.bossType)) m.bossesFelled.push(def.bossType);
     });
 
-    const isLast = this.mapIndex >= MAPS.length - 1;
+    const isLast = Maps.isLast(this.mapNumber);
     this.toast(isLast
       ? `${def.bossName} falls. The deep is yours.`
       : `${def.bossName} falls. A way down opens.`, 6);
@@ -529,7 +594,7 @@ class Game {
     player.heal(Math.round(player.maxHp * 0.5));
     player.energy = player.maxEnergy;
     // Generate the next map while the boss death still fills the screen.
-    this.loadMap(this.mapIndex + 1, { player });
+    this.loadMap(Maps.next(this.mapNumber), { player });
     this.fx.addFlash('#ffffff', 0.7);
     this.saveNow();
   }
@@ -540,7 +605,7 @@ class Game {
     const mins = Math.floor(this.time / 60), secs = Math.floor(this.time % 60);
 
     // A run is over: the resume save dies with it, but the meta record keeps.
-    Save.clearRun();
+    Save.clearRun(this.saveSlot);
     Save.updateMeta(m => {
       if (won) {
         m.wins++;
@@ -550,11 +615,11 @@ class Game {
 
     document.getElementById('endTitle').textContent = won ? 'The Deep Is Yours' : 'You Died';
     document.getElementById('endSub').textContent = won
-      ? `You went down with a ${p.cls.tiers[0].weapon.toLowerCase()} and walked out of Sarapolis.`
-      : `${MAPS[this.mapIndex].name} keeps you. The ${p.weaponName.toLowerCase()} was not enough.`;
+      ? `You went down with a ${Seq.get(p.cls.tiers, Seq.FIRST).weapon.toLowerCase()} and walked out of Sarapolis.`
+      : `${Maps.byNumber(this.mapNumber).name} keeps you. The ${p.weaponName.toLowerCase()} was not enough.`;
     document.getElementById('endStats').innerHTML = [
       ['Class', `${p.cls.className} (${p.weaponName})`],
-      ['Reached', MAPS[this.mapIndex].name],
+      ['Reached', Maps.byNumber(this.mapNumber).name],
       ['Level', `${p.level}`],
       ['Enemies slain', `${p.kills}`],
       ['Gold gathered', `${p.gold}`],
@@ -658,7 +723,7 @@ class Game {
     const p = this.player;
     if (!p || !p.loadout) return;
     // A quick tap is a cycle; a deliberate hold commits to what you pointed at.
-    const picked = r.held < 0.2 ? p.cycleSlot(1) : p.setSlot(r.index);
+    const picked = r.held < 0.2 ? p.cycleSlot(1) : p.setSlot(r.slot);
     this.hudCache.slot = null;
     this.fx.text(p.x, p.y - 46, picked.name, picked.color, 17);
     this.fx.ring(p.x, p.y, 26, picked.color, 18);
@@ -674,7 +739,8 @@ class Game {
     const dx = this.mouse.x - this.vw / 2, dy = this.mouse.y - this.vh / 2;
     if (Math.hypot(dx, dy) > 45) {
       const a = Math.atan2(dy, dx) + Math.PI / 2 + Math.PI * 2;
-      r.index = Math.floor((a % (Math.PI * 2)) / (Math.PI * 2) * opts.length) % opts.length;
+      const wedge = Math.floor((a % (Math.PI * 2)) / (Math.PI * 2) * opts.length) % opts.length;
+      r.slot = Seq.toNumber(wedge);
     }
   }
 
@@ -695,7 +761,7 @@ class Game {
     for (let i = 0; i < opts.length; i++) {
       const o = opts[i];
       const a0 = -Math.PI / 2 + i * seg, a1 = a0 + seg;
-      const on = i === r.index;
+      const on = Seq.toNumber(i) === r.slot;
       ctx.beginPath();
       ctx.arc(cx, cy, on ? outer + 10 : outer, a0 + 0.03, a1 - 0.03);
       ctx.arc(cx, cy, inner, a1 - 0.03, a0 + 0.03, true);
@@ -719,7 +785,7 @@ class Game {
       ctx.fillText(o.name, lx, ly + 15);
     }
 
-    const cur = opts[r.index];
+    const cur = Seq.get(opts, r.slot);
     ctx.textAlign = 'center';
     ctx.fillStyle = cur.color;
     ctx.font = '600 15px system-ui';
@@ -801,7 +867,7 @@ class Game {
     prop.wave = [];
 
     const threat = prop.room.threat;
-    const table = MAPS[this.mapIndex].tables[U.clamp(prop.room.tier, 0, 5)];
+    const table = Maps.byNumber(this.mapNumber).tables[U.clamp(prop.room.tier, 0, 5)];
     const count = 4 + Math.min(3, Math.floor(threat / 2));
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + U.rand(-0.3, 0.3);
@@ -852,7 +918,7 @@ class Game {
   }
 
   startBossFight(room) {
-    const def = MAPS[this.mapIndex];
+    const def = Maps.byNumber(this.mapNumber);
     this.bossActive = true;
     this.dungeon.sealed = true;
     this.boss = this.spawnEnemy(def.bossType, room.wx, room.wy - 40, room.threat, false);
@@ -899,6 +965,14 @@ class Game {
   update(dt) {
     if (this.state !== 'playing') { this.fx.update(dt); return; }
     this.updateRoulette(dt);
+    this.updateTempest(dt);
+    // Impact frames: hold the whole simulation for a beat on a heavy hit.
+    if (this.freezeT > 0) {
+      this.freezeT = Math.max(0, this.freezeT - dt);
+      this.fx.update(dt * 0.15);
+      this.updateHud();
+      return;
+    }
     // Holding the wheel open slows the world rather than freezing it.
     if (this.roulette.open) dt *= 0.25;
     this.time += dt;
@@ -998,7 +1072,7 @@ class Game {
       this.currentRoom = room;
       if (room.kind === 'boss' && !this.gateFound) {
         this.gateFound = true;
-        if (!this.bossDefeated) this.toast(MAPS[this.mapIndex].gateLine, 5);
+        if (!this.bossDefeated) this.toast(Maps.byNumber(this.mapNumber).gateLine, 5);
       }
     }
 
@@ -1064,11 +1138,11 @@ class Game {
     text('xpText', `LV ${p.level} · ${p.weaponName.toUpperCase()} ${U.roman(p.weaponLevel)}`);
     text('goldText', String(p.gold));
     text('killText', String(p.kills));
-    text('mapText', MAPS[this.mapIndex].name);
+    text('mapText', Maps.byNumber(this.mapNumber).name);
     text('shrineText', `${this.shrinesDown}/${this.dungeon.redShrineCount}`);
     flag('shrineChip', 'done', this.shrinesDown >= this.dungeon.redShrineCount);
     text('regionText', this.currentRoom
-      ? (this.currentRoom.kind === 'boss' ? MAPS[this.mapIndex].bossName : this.dungeon.regionName(this.currentRoom.tier))
+      ? (this.currentRoom.kind === 'boss' ? Maps.byNumber(this.mapNumber).bossName : this.dungeon.regionName(this.currentRoom.tier))
       : '…');
 
     const heavyCost = p.cls.heavy.cost * p.costMul * 0.35;
@@ -1547,7 +1621,9 @@ class Game {
      touches the body exactly when the hit lands, so timing is judged by
      distance rather than by counting frames. Blue can be parried, red cannot. */
   drawTelegraph(ctx, e, x, y, kind, progress, atk) {
-    const red = kind === 'red';
+    // A braced Tanker sees no red: the shield makes everything parryable,
+    // so the indicator has to say so before the blow lands, not after.
+    const red = kind === 'red' && !this.player.isBlocking();
     const col = red ? '#ff5a3c' : '#8fd4ff';
     const r = e.radius;
 

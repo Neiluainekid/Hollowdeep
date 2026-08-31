@@ -8,15 +8,16 @@ you cannot carry both.
 |---|---|---|
 | **Wooden Sword** | **Melee** | 140 HP, 15% damage reduction, wide arcing swings that hit everything in reach, a charged **Cleave** that stuns and throws, an i-frame **Dash**, and health restored on every kill. |
 | **Slingshot** | **Ranger** | 85 HP, fastest movement, rapid self-refilling pebbles, a charged **Piercing Shot** that skewers a whole line, an i-frame **Roll**, and up to +45% bonus damage the further away the target is. |
+| **Riot Shield** | **Tanker** | 200 HP and the slowest legs in the deep. Bracing raises the shield, which turns **red attacks blue** — nothing is unblockable to you. Upgrades to the **Spiky Shield** in Sarapolis. |
 | **Bone Staff** | **Necromancer** | 100 HP and a mana pool. RMB raises whichever servant is on your wheel, four standing at once. |
 | **Wooden Staff** | **Mage** | 82 HP, the thinnest skin in the deep, and four elements on a wheel — eight spells in total. |
 
-The four share almost nothing: separate stat lines, separate resources, separate
+The five share almost nothing: separate stat lines, separate resources, separate
 level-up perk pools (8 shared boons + 6 exclusive to each class).
 
 ### The wheel — `R`
 
-Both casters carry four options and swap between them with `R`. **Tap** to cycle
+**Every** class now carries a loadout on `R`, not just the casters. **Tap** to cycle
 to the next; **hold** to open the wheel, point, and release to pick. Holding
 slows time to a quarter speed, so switching mid-fight is a decision rather than
 a scramble.
@@ -28,7 +29,7 @@ a scramble.
 | **Thrall** | 14 | 2s | 10 damage a swing, crumbles after 15 seconds |
 | **Bloat** | 22 | 10s | Runs in and detonates for 30 in a wide circle |
 | **Bone Brute** | 40 | 30s | 200 HP, one at a time, and enemies attack *it* instead of you |
-| **Jarona** | 18 | 5s | Hurls itself at the nearest enemy for 20, shouting, and is not seen again |
+| **Jarona** | 18 | 2s | A shouted **3-hit bounce combo**, ricocheting between targets, outlined in blue |
 
 **Mage elements** — each has a light cast and a charged heavy:
 
@@ -37,7 +38,7 @@ a scramble.
 | **Fire** | Fireball | **Meteor** — 50 to the target, 30 around it. Half your mana. |
 | **Earth** | Vine trap that roots and bleeds | **Bloom** — a turret that fights for 30s, then bursts into damaging goo |
 | **Ice** | Shard that slows, 1-in-100 to freeze outright | **Ice Wall** — 60 to the target, 20 around it. 70% of your mana. |
-| **Air** | Tornado — flings the weak, shoves the rest | **Gale** — a cone that blows the room away |
+| **Air** | Tornado — flings the weak, shoves the rest | **Tempest** — a screen-wide storm that *deletes* every non-elite caught in it, at the cost of **all** your mana and stamina |
 
 Elites and bosses are too heavy to root, fling or blow back, and can never be
 frozen by a lucky shard — against them those spells are damage only.
@@ -62,7 +63,7 @@ then visit `http://localhost:8123`.
 | `RMB` (hold to charge, release) | Heavy attack — Cleave / Piercing Shot |
 | `SHIFT` | Dash / Roll — costs energy, grants brief invulnerability |
 | `SPACE` | Parry — a short window that negates blue attacks |
-| `R` | Casters only: tap to cycle the wheel, hold to pick from it |
+| `R` | Tap to cycle your loadout, hold to pick from the wheel |
 | `E` | Interact with chests, fountains, shrines, the Warden's Gate |
 | `TAB` | World map |
 | `ESC` | Pause |
@@ -135,9 +136,10 @@ opens a damage window, but only works on blue.
 
 ## Saving
 
-The game autosaves every 5 seconds to `localStorage`, so you can close the tab
-or shut the laptop down and pick the run up later from **Continue run** on the
-title screen.
+**Three independent save slots**, numbered 1 to 3 on the title screen. Each
+autosaves every 5 seconds to `localStorage`, so you can close the tab or shut
+the laptop down and pick any of the three runs up later. Clicking an occupied
+slot resumes it; clicking an empty one selects it for a new run.
 
 It is a *suspend/resume* save, not a checkpoint. The save is deleted the moment
 it is loaded and the moment a run ends, so you can put a run down — but you
@@ -149,7 +151,21 @@ ids, and which props you used. The dungeon itself is regenerated from its seed,
 and perks are replayed through `perk.apply()` on load.
 
 Note that `localStorage` is keyed to the origin, so serving the game on a
-different port gives you a different save file.
+different port gives you a different set of save files.
+
+### Indexing convention
+
+Every authored sequence in this codebase counts **from 1**: save slots, UI
+slots, loadout slots, map numbers, weapon tiers, shrine ids. `Seq` in
+`js/util.js` is the only place the offset lives, so the convention is
+greppable rather than smeared through the code as bare `+1`s.
+
+Engine-internal buffers are the deliberate exception and remain 0-based — the
+`Uint8Array` tile grid (`ty * w + tx`), spatial-hash buckets, typed arrays and
+canvas pixel data. Those are addressed by hardware and DOM contracts that
+define index 0 as the first element; renumbering them would not be a
+convention change, it would be an off-by-one in the renderer and the collision
+system.
 
 ## The world
 

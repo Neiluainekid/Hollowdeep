@@ -1,29 +1,59 @@
-/* Bootstrap: offer to resume, wire the class-select cards, run the clock. */
+/* Bootstrap: pick a save slot (1..3), pick a weapon, run the clock. */
 'use strict';
 
 (function () {
   const game = new Game();
   window.game = game;
 
-  /* ---- resume offer ---- */
-  const box = document.getElementById('continueBox');
-  const saved = Save.hasRun() ? Save.peek() : null;
-  if (saved) {
-    const cls = CLASSES[saved.player.classId];
-    const when = new Date(saved.savedAt || Date.now());
-    const mins = Math.floor((saved.elapsed || 0) / 60);
-    const map = MAPS[saved.mapIndex || 0];
-    document.getElementById('continueInfo').textContent =
-      `${cls ? cls.className : '?'} · level ${saved.player.level} · ${map.name} · ${mins}m played · saved ${when.toLocaleString()}`;
-    box.classList.remove('hidden');
-    document.getElementById('continueBtn').addEventListener('click', () => game.resume(Save.readRun()));
+  /* ---- save slot picker ----
+     Slots are 1-based end to end: the number shown on screen, the number in
+     the storage key, and the number the run is written back to are the same. */
+  let selectedSlot = Save.SLOT_FIRST;
+
+  const slotRow = document.getElementById('slotRow');
+  const slotHint = document.getElementById('slotHint');
+
+  function renderSlots() {
+    const survey = Save.surveySlots();
+    slotRow.replaceChildren();
+
+    for (const entry of survey) {
+      const btn = document.createElement('button');
+      btn.className = `saveslot ${entry.empty ? 'empty' : 'occupied'}`
+        + (entry.slot === selectedSlot ? ' selected' : '');
+      btn.dataset.slot = String(entry.slot);
+      btn.innerHTML =
+        `<div class="n">Slot ${entry.slot}</div>` +
+        `<div class="body">${entry.label}</div>` +
+        `<span class="act">${entry.empty ? 'new run' : 'continue'}</span>`;
+      btn.addEventListener('click', () => {
+        selectedSlot = entry.slot;
+        if (entry.data) {
+          // Occupied slot: resume straight into it.
+          game.resume(Save.readRun(entry.slot), entry.slot);
+        } else {
+          renderSlots();
+          slotHint.textContent = `Slot ${entry.slot} selected — choose a weapon below.`;
+        }
+      });
+      slotRow.appendChild(btn);
+    }
+
+    const anyOccupied = survey.some(e => !e.empty);
+    if (!Save.available()) {
+      slotHint.textContent = 'Storage is unavailable, so this run will not be saved.';
+    } else if (!anyOccupied) {
+      slotHint.textContent = 'Pick a slot, then choose a weapon.';
+    }
   }
+  renderSlots();
 
   document.querySelectorAll('.card').forEach((card) => {
     card.addEventListener('click', () => {
-      // Starting fresh discards any suspended run.
-      if (saved && !confirm('This abandons your suspended run. Start a new one?')) return;
-      game.start(card.dataset.class, document.getElementById('seedInput').value);
+      // Starting fresh in an occupied slot discards whatever was suspended there.
+      if (Save.hasRun(selectedSlot)
+        && !confirm(`Slot ${selectedSlot} holds a suspended run. Overwrite it?`)) return;
+      game.start(card.dataset.class, document.getElementById('seedInput').value, selectedSlot);
     });
   });
 

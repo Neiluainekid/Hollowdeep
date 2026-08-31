@@ -56,9 +56,10 @@
       <p class="tagline">Two dungeons sprawl beneath the world. You may carry <em>one</em> weapon down.<br>
         What you choose is what you become.</p>
 
-      <div id="continueBox" class="continue hidden">
-        <button class="btn" id="continueBtn">Continue run</button>
-        <span class="hint" id="continueInfo"></span>
+      <div id="slotBox" class="slots">
+        <div class="slots-head">Save slots</div>
+        <div class="slot-row" id="slotRow"></div>
+        <div class="slot-hint" id="slotHint">Pick a slot, then choose a weapon.</div>
       </div>
 
       <div class="cards">
@@ -90,6 +91,21 @@
             <li>Bonus damage against distant targets</li>
           </ul>
           <span class="pick">Take the slingshot</span>
+        </button>
+
+        <button class="card" data-class="tanker">
+          <div class="card-art art-shield"></div>
+          <h2>Riot Shield</h2>
+          <div class="klass">→ TANKER</div>
+          <p>You will not be fast. You will not need to be.</p>
+          <ul>
+            <li><b>200</b> Vitality — the wall of the deep</li>
+            <li>Brace to block: <b>red attacks turn blue</b> and can be parried</li>
+            <li><b>R</b> toggles Heavy Dash and Heavy Slam</li>
+            <li>Upgrades to the <b>Spiky Shield</b> in Sarapolis</li>
+            <li>Slowest movement in the game</li>
+          </ul>
+          <span class="pick">Take the shield</span>
         </button>
 
         <button class="card" data-class="necromancer">

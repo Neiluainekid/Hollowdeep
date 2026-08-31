@@ -56,7 +56,7 @@ class Player {
     this.gold = 0;
     this.kills = 0;
     this.weaponLevel = 1;   // shard rank within a tier
-    this.weaponTier = 0;    // which entry of cls.tiers is in hand
+    this.weaponTier = Seq.FIRST;   // 1-based index into cls.tiers
     this.perksTaken = [];
 
     // Modifier block — every perk writes into exactly one of these.
@@ -91,6 +91,7 @@ class Player {
     this.dashT = 0;
     this.dashDir = 0;
     this.dashHit = new Set();
+    this.shieldChargeDmg = 0;
     this.swing = null;
     this.bob = 0;
     this.dead = false;
@@ -100,7 +101,7 @@ class Player {
     this.parryFlash = 0;    // purely visual afterglow on a success
     this.parries = 0;
 
-    this.slot = 0;          // index into cls.loadout.options (casters)
+    this.slot = Seq.FIRST;  // 1-based slot in cls.loadout.options
     this.minionCds = {};
     this.minionPower = 1;
     this.summonCdMul = 1;
@@ -112,6 +113,9 @@ class Player {
   }
 
   isParrying() { return this.parryT > 0; }
+
+  // Bracing (charging the heavy) is what raises the Tanker's shield.
+  isBlocking() { return !!this.cls.blocksWhileCharging && this.charging; }
 
   /* ---------------- caster support ---------------- */
 
@@ -125,18 +129,17 @@ class Player {
   }
 
   get loadout() { return this.cls.loadout || null; }
-  get slotDef() { return this.loadout ? this.loadout.options[this.slot] : null; }
+  get slotDef() { return this.loadout ? Seq.get(this.loadout.options, this.slot) : null; }
 
   cycleSlot(dir = 1) {
     if (!this.loadout) return null;
-    const n = this.loadout.options.length;
-    this.slot = ((this.slot + dir) % n + n) % n;
+    this.slot = Seq.wrapTo(this.loadout.options, this.slot + dir);
     return this.slotDef;
   }
 
-  setSlot(i) {
+  setSlot(n) {
     if (!this.loadout) return null;
-    this.slot = U.clamp(i, 0, this.loadout.options.length - 1);
+    this.slot = Seq.clampTo(this.loadout.options, n);
     return this.slotDef;
   }
 
@@ -209,11 +212,20 @@ class Player {
      Order matters: dodging beats everything, then parry, then damage. */
   takeHit(amount, game, opts = {}) {
     if (this.dead) return 'none';
-    const kind = opts.kind || 'blue';
+    let kind = opts.kind || 'blue';
 
     if (this.iframes > 0) {
       game.onDodge(this, opts);
       return 'dodge';
+    }
+
+    /* Tanker: a raised shield downgrades unblockable to parryable. This is
+       the single rule that defines the class — with the shield up there is
+       no such thing as a red attack, only a heavier blue one. */
+    if (this.isBlocking() && kind === 'red') {
+      kind = 'blue';
+      amount *= (1 - (this.cls.blockDR || 0));
+      game.fx.text(this.x, this.y - 52, 'BLOCKED', '#8fd4ff', 13);
     }
 
     if (this.isParrying()) {
@@ -240,7 +252,7 @@ class Player {
       classId: this.classId,
       level: this.level, xp: this.xp,
       gold: this.gold, kills: this.kills,
-      weaponLevel: this.weaponLevel, weaponTier: this.weaponTier,
+      weaponLevel: this.weaponLevel, weaponTier: this.weaponTier,   // both 1-based
       perks: this.perksTaken.slice(),
       hp: this.hp, energy: this.energy, mana: this.mana,
       slot: this.slot,
@@ -251,7 +263,7 @@ class Player {
   static restore(data) {
     const p = new Player(CLASSES[data.classId] ? data.classId : CLASS_IDS[0], data.x || 0, data.y || 0);
     p.weaponLevel = data.weaponLevel || 1;
-    p.weaponTier = data.weaponTier || 0;
+    p.weaponTier = data.weaponTier || Seq.FIRST;
     p.gold = data.gold || 0;
     p.kills = data.kills || 0;
 
@@ -270,18 +282,18 @@ class Player {
     p.hp = U.clamp(data.hp ?? p.maxHp, 1, p.maxHp);
     p.energy = U.clamp(data.energy ?? p.maxEnergy, 0, p.maxEnergy);
     p.mana = U.clamp(data.mana ?? p.maxMana, 0, p.maxMana);
-    if (p.loadout) p.slot = U.clamp(data.slot || 0, 0, p.loadout.options.length - 1);
+    if (p.loadout) p.slot = Seq.clampTo(p.loadout.options, data.slot || Seq.FIRST);
     return p;
   }
 
-  get tier() { return this.cls.tiers[U.clamp(this.weaponTier, 0, this.cls.tiers.length - 1)]; }
+  get tier() { return Seq.get(this.cls.tiers, Seq.clampTo(this.cls.tiers, this.weaponTier)); }
   get weaponName() { return this.tier.weapon; }
   get power() { return this.dmgMul * (1 + (this.weaponLevel - 1) * 0.16) * this.tier.dmgMul; }
   get cooldownScale() { return this.cdMul * this.tier.cdMul; }
 
   // Promote to the weapon tier a given map hands out (never demote).
-  setWeaponTier(index, game) {
-    const next = U.clamp(index, 0, this.cls.tiers.length - 1);
+  setWeaponTier(number, game) {
+    const next = Seq.clampTo(this.cls.tiers, number);
     if (next <= this.weaponTier) return null;
     this.weaponTier = next;
     if (game) {
@@ -319,6 +331,8 @@ class Player {
     if (this.iframes > 0 || this.dead) return;
     let dr = this.dr;
     if (this.wardedByMinions && game.minions.some(m => !m.dead)) dr = 1 - (1 - dr) * 0.86;
+    const stanceDr = this.slotDef && this.slotDef.dr ? this.slotDef.dr : 0;
+    if (stanceDr) dr = 1 - (1 - dr) * (1 - stanceDr);
     const dmg = Math.max(1, Math.round(n * (1 - dr)));
     this.hp -= dmg;
     this.iframes = 0.45;
@@ -373,7 +387,7 @@ class Player {
         count: 2, color: this.cls.dashColors,
         speedMin: 5, speedMax: 40, lifeMin: 0.15, lifeMax: 0.32, sizeMax: 3,
       });
-      if (this.dashDamage > 0) this.dashStrike(game);
+      if (this.dashDamage > 0 || this.shieldChargeDmg > 0) this.dashStrike(game);
     } else {
       let speed = this.cls.speed * this.moveMul;
       if (game.dungeon.isWaterAt(this.x, this.y)) speed *= 0.62;
@@ -495,18 +509,24 @@ class Player {
       if (s.stun > 0) e.stun = Math.max(e.stun, s.stun);
       game.fx.addShake(s.heavy ? 5 : 2);
       game.audio.impact(s.heavy);
+      if (s.impact) game.impactFreeze(0.05);   // heavy hits hold for a beat
     }
   }
 
   dashStrike(game) {
+    // A Tanker's Heavy Dash trades on the shield, not on a perk.
+    const shield = this.shieldChargeDmg || 0;
+    const dmg = shield > 0 ? shield : this.dashDamage * this.power;
     for (const e of game.enemyHash.query(this.x, this.y, this.radius + 48, this._q)) {
       if (e.dead || this.dashHit.has(e)) continue;
       if (U.dist(this.x, this.y, e.x, e.y) > this.radius + e.radius + 6) continue;
       this.dashHit.add(e);
-      e.takeDamage(this.dashDamage * this.power, game, this.x, this.y, 420, false);
-      e.stun = Math.max(e.stun, 0.4);
-      game.fx.addShake(4);
+      e.takeDamage(dmg, game, this.x, this.y, shield > 0 ? 720 : 420, false);
+      e.stun = Math.max(e.stun, shield > 0 ? 0.7 : 0.4);
+      if (shield > 0) { game.impactFreeze(0.05); game.fx.addShake(8); }
+      else game.fx.addShake(4);
     }
+    if (shield > 0 && this.dashT <= 0) this.shieldChargeDmg = 0;
   }
 
   fireProjectile(game, angle, cfg) {
@@ -521,6 +541,7 @@ class Player {
       knock: cfg.knock,
       pierce: cfg.pierce,
       heavy: cfg.heavy,
+      pierceFalloff: cfg.pierceFalloff || null,
       ricochet: cfg.pierce ? 0 : this.ricochet,
       owner: 'player',
       color: cfg.color || (cfg.heavy ? '#ffffff' : '#cbd8f0'),
@@ -603,7 +624,13 @@ class Projectile {
         if (this.effect) this.applyEffect(e, game);
         if (this.aoe) { this.burst(game, e); return; }
 
-        if (this.pierce) continue;
+        if (this.pierce) {
+          // Everything past the first body takes the reduced pierce band.
+          if (this.pierceFalloff) {
+            this.damage = U.rand(this.pierceFalloff.min, this.pierceFalloff.max);
+          }
+          continue;
+        }
         if (this.ricochet > 0) {
           const next = game.enemyHash.nearest(this.x, this.y, 280, o => !o.dead && !this.hits.has(o));
           if (next) {
@@ -744,6 +771,7 @@ const PARRY = {
   stagger: 1.3,      // how long a parried enemy is open
   refund: 25,        // energy back on success
   vuln: 1.6,         // damage multiplier against a staggered enemy
+  perfectOdds: 20,   // 1-in-20 parries execute a non-boss outright
 };
 
 /* Enemies no longer damage you by touching you. Every attack is a wind-up you

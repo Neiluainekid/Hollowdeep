@@ -1,24 +1,53 @@
-/* Persistence.
+/* Persistence — Update 2.0: three independent save slots.
 
-   Two separate stores with deliberately different lifetimes:
+     SLOT KEYS — three in-progress runs, numbered 1..3. Each is written every
+                 few seconds while you play. A slot is cleared the moment its
+                 run ends, so you get suspend/resume across a shutdown without
+                 getting checkpoints: you can close the laptop and come back,
+                 but you cannot reload to undo a death.
 
-     RUN_KEY  — one in-progress run. Written every few seconds, deleted the
-                moment it is loaded and the moment a run ends. That gives
-                suspend/resume across a shutdown WITHOUT giving checkpoints:
-                you can close the laptop and come back, but you cannot reload
-                to undo a death.
-
-     META_KEY — never deleted. Bosses first felled, best time, classes played.
+     META_KEY  — never deleted. Bosses first felled, best time, classes played.
 
    The save stores *inputs*, not derived state. Perks are stored as ids and
    replayed through perk.apply() on load, so retuning a perk later fixes old
    saves instead of leaving them holding stale numbers. The dungeon isn't
-   stored at all — it is regenerated from its seed. */
+   stored at all — it is regenerated from its seed.
+
+   ── 1-BASED INDEXING ──────────────────────────────────────────────────────
+   Per the Update 2.0 architectural rule, every authored/domain sequence in
+   this codebase counts from 1: save slots, UI slots, loadout slots, map
+   numbers, shrine ids, boss table entries. `ONE_BASED` below is the single
+   source of truth for the offset so the intent is greppable rather than
+   hidden behind stray +1s.
+
+   Engine-internal buffers are the deliberate exception and stay 0-based:
+   the Uint8Array tile grid (`ty * w + tx`), spatial-hash buckets, typed
+   arrays and canvas pixel data. Those are addressed by hardware/DOM APIs
+   that define index 0 as the first element; renumbering them would not be a
+   convention change, it would be an off-by-one in the renderer and the
+   collision system. See `Seq` in util.js for the helpers.
+   ────────────────────────────────────────────────────────────────────────── */
 'use strict';
 
 const Save = {
-  RUN_KEY: 'hollowdeep.run.v1',
-  META_KEY: 'hollowdeep.meta.v1',
+  VERSION: 2,
+  SLOT_FIRST: 1,
+  SLOT_COUNT: 3,
+  META_KEY: 'hollowdeep.meta.v2',
+
+  get SLOT_LAST() { return this.SLOT_FIRST + this.SLOT_COUNT - 1; },
+
+  // Slots are 1..3 in the key itself, so the storage is self-documenting.
+  slotKey(slot) { return `hollowdeep.run.v2.slot${slot}`; },
+
+  validSlot(slot) {
+    return Number.isInteger(slot) && slot >= this.SLOT_FIRST && slot <= this.SLOT_LAST;
+  },
+
+  // 1-based list of every slot number, for UI iteration.
+  slotNumbers() {
+    return Seq.range(this.SLOT_FIRST, this.SLOT_COUNT);
+  },
 
   available() {
     try {
@@ -29,41 +58,55 @@ const Save = {
     } catch { return false; }   // private mode, disabled storage, file:// opaque origin
   },
 
-  /* ---------------- run save ---------------- */
+  /* ---------------- per-slot run save ---------------- */
 
-  hasRun() {
-    if (!this.available()) return false;
-    try {
-      const raw = localStorage.getItem(this.RUN_KEY);
-      if (!raw) return false;
-      const data = JSON.parse(raw);
-      return data && data.v === 1 && !!data.player;
-    } catch { return false; }
+  hasRun(slot) {
+    return !!this.readRun(slot);
   },
 
-  peek() {
-    try { return JSON.parse(localStorage.getItem(this.RUN_KEY)); } catch { return null; }
-  },
-
-  writeRun(state) {
-    if (!this.available()) return false;
+  readRun(slot) {
+    if (!this.available() || !this.validSlot(slot)) return null;
     try {
-      localStorage.setItem(this.RUN_KEY, JSON.stringify(state));
-      return true;
-    } catch { return false; }   // quota exceeded — a lost save beats a crash
-  },
-
-  readRun() {
-    if (!this.available()) return null;
-    try {
-      const data = JSON.parse(localStorage.getItem(this.RUN_KEY));
-      if (!data || data.v !== 1) return null;
+      const data = JSON.parse(localStorage.getItem(this.slotKey(slot)));
+      if (!data || data.v !== this.VERSION || !data.player) return null;
       return data;
     } catch { return null; }
   },
 
-  clearRun() {
-    try { localStorage.removeItem(this.RUN_KEY); } catch { /* nothing to do */ }
+  writeRun(slot, state) {
+    if (!this.available() || !this.validSlot(slot)) return false;
+    try {
+      localStorage.setItem(this.slotKey(slot), JSON.stringify(state));
+      return true;
+    } catch { return false; }   // quota exceeded — a lost save beats a crash
+  },
+
+  clearRun(slot) {
+    if (!this.validSlot(slot)) return;
+    try { localStorage.removeItem(this.slotKey(slot)); } catch { /* nothing to do */ }
+  },
+
+  /* Summary of all three slots for the title screen, in slot order.
+     Always returns SLOT_COUNT entries; `data` is null for an empty slot. */
+  surveySlots() {
+    return this.slotNumbers().map(slot => {
+      const data = this.readRun(slot);
+      return {
+        slot,
+        empty: !data,
+        data,
+        label: data ? this.describe(data) : 'Empty',
+      };
+    });
+  },
+
+  describe(data) {
+    const cls = (typeof CLASSES !== 'undefined' && CLASSES[data.player.classId]) || null;
+    const mapNo = data.mapNumber || Save.SLOT_FIRST;
+    const mapName = (typeof MAPS !== 'undefined' && Maps.byNumber(mapNo))
+      ? Maps.byNumber(mapNo).name : `Map ${mapNo}`;
+    const mins = Math.floor((data.elapsed || 0) / 60);
+    return `${cls ? cls.className : '?'} · Lv ${data.player.level} · ${mapName} · ${mins}m`;
   },
 
   /* ---------------- meta (survives death) ---------------- */
@@ -89,10 +132,10 @@ const Save = {
     return meta;
   },
 
-  /* ---------------- explored bitmap packing ---------------- */
+  /* ---------------- explored bitmap packing ----------------
+     The bitmap itself is an engine buffer and stays 0-based; only the run
+     length list is transported. RLE keeps a 152x152 map at 1-3 KB. */
 
-  // 152x152 = 23,104 bytes raw. Run-length encoded it is typically 1-3 KB,
-  // because exploration is contiguous.
   encodeExplored(u8) {
     const runs = [];
     let cur = 0, run = 0;

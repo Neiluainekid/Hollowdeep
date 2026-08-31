@@ -29,11 +29,15 @@ const MINION_TYPES = {
     desc: 'A 200 HP wall that pulls attacks off you. One at a time.',
   },
   jarona: {
+    // Update 2.0: no longer a one-shot kamikaze. Jarona ricochets through up
+    // to three targets shouting all the way, and is outlined in blue so the
+    // combo reads at a glance.
     name: 'Jarona', icon: '➤', color: '#ff9a6a', dark: '#7a3a1f',
-    hp: 18, speed: 250, radius: 9, damage: 20,
-    life: 9, cost: 18, cooldown: 5,
-    kamikaze: true,
-    desc: 'Hurls itself at the nearest enemy and is not seen again.',
+    hp: 18, speed: 300, radius: 9, damage: 20,
+    life: 12, cost: 18, cooldown: 2,
+    bounceCombo: 3,
+    outline: '#8fd4ff',
+    desc: 'Bounces through three enemies in one shouted combo. 2s cooldown.',
   },
 };
 
@@ -75,6 +79,7 @@ class Minion {
     if (this.dead) return;
     this.life -= dt;
     this.hitCd = Math.max(0, this.hitCd - dt);
+    this.comboCd = Math.max(0, (this.comboCd || 0) - dt);
     this.flash = Math.max(0, this.flash - dt);
     this.bob += dt * 7;
     if (this.life <= 0) { this.expire(game, true); return; }
@@ -91,8 +96,9 @@ class Minion {
       const touching = d < this.radius + t.radius + 3;
       if (touching) {
         if (this.def.explodes) { this.detonate(game); return; }
-        if (this.def.kamikaze) { this.jarona(game, t); return; }
-        if (this.hitCd <= 0) {
+        else if (this.def.bounceCombo) {
+          if (this.comboCd <= 0) this.bounce(game, t);
+        } else if (this.hitCd <= 0) {
           this.hitCd = this.def.hitCd;
           t.takeDamage(this.def.damage * (this.owner ? this.owner.minionPower : 1), game, this.x, this.y, 90, false);
           game.audio.impact(false);
@@ -129,15 +135,36 @@ class Minion {
     }
   }
 
-  jarona(game, t) {
-    this.dead = true;
-    game.fx.text(this.x, this.y - 22, 'JARONA!', '#ff9a6a', 19);
+  /* Three-hit bounce combo: strike, ricochet off to the next target, and
+     expire on the third. Each landing hits harder than the last. */
+  bounce(game, t) {
+    this.hits = (this.hits || 0) + 1;
+    const power = this.owner ? this.owner.minionPower : 1;
+    const dmg = this.def.damage * power * (1 + (this.hits - 1) * 0.25);
+
+    t.takeDamage(dmg, game, this.x, this.y, 300, this.hits >= this.def.bounceCombo);
+    game.fx.text(this.x, this.y - 22, this.hits >= this.def.bounceCombo ? 'JARONA!' : `JAR-${this.hits}`,
+      this.hits >= this.def.bounceCombo ? '#ff9a6a' : '#8fd4ff', this.hits >= this.def.bounceCombo ? 19 : 14);
+    game.fx.ring(this.x, this.y, 16, this.def.outline, 12);
     game.fx.spark(this.x, this.y, {
-      count: 20, color: ['#ff9a6a', '#ffffff'], speedMax: 260, lifeMax: 0.55, sizeMax: 4,
+      count: 12, color: [this.def.outline, '#ffffff'], speedMax: 220, lifeMax: 0.4, sizeMax: 3.5,
     });
-    game.fx.addShake(4);
-    game.audio.jarona();
-    t.takeDamage(this.def.damage * (this.owner ? this.owner.minionPower : 1), game, this.x, this.y, 380, false);
+    game.audio.jaronaHit(this.hits, this.hits >= this.def.bounceCombo);
+
+    if (this.hits >= this.def.bounceCombo) {
+      game.fx.addShake(5);
+      game.impactFreeze(0.05);
+      this.dead = true;
+      return;
+    }
+    // Kick off toward the next victim so the ricochet is visible.
+    this.comboCd = 0.22;
+    const next = game.enemyHash.nearest(this.x, this.y, 380, o => !o.dead && o !== t);
+    const a = next ? U.angle(this.x, this.y, next.x, next.y) : U.rand(0, Math.PI * 2);
+    this.vx = Math.cos(a) * 420;
+    this.vy = Math.sin(a) * 420;
+    this.x += Math.cos(a) * 6;
+    this.y += Math.sin(a) * 6;
   }
 
   expire(game, natural) {
@@ -160,8 +187,8 @@ class Minion {
     const fading = this.def.life !== Infinity && this.life < 3;
     ctx.globalAlpha = fading ? 0.35 + Math.abs(Math.sin(this.life * 8)) * 0.5 : 1;
     ctx.fillStyle = this.flash > 0 ? '#ffffff' : this.def.color;
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = this.def.color;
+    ctx.shadowBlur = this.def.outline ? 16 : 10;
+    ctx.shadowColor = this.def.outline || this.def.color;
 
     const w = this.radius * 1.4, h = this.radius * 1.8;
     ctx.fillRect(this.x - w / 2, y - h / 2, w, h);
@@ -173,6 +200,18 @@ class Minion {
     ctx.fillStyle = 'rgba(20,16,24,.85)';
     ctx.fillRect(this.x - 3.5, y - h / 2 - this.radius * 0.55, 2.2, 2.2);
     ctx.fillRect(this.x + 1.3, y - h / 2 - this.radius * 0.55, 2.2, 2.2);
+
+    // Combo minions wear a hard blue outline so the bounce reads mid-fight.
+    if (this.def.outline) {
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = this.def.outline;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(this.x - w / 2 - 1.5, y - h / 2 - 1.5, w + 3, h + 3);
+      ctx.fillStyle = this.def.outline;
+      ctx.font = '700 9px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${(this.hits || 0)}/${this.def.bounceCombo}`, this.x, y - h / 2 - 8);
+    }
 
     if (this.maxHp > 60 && this.hp < this.maxHp) {
       ctx.globalAlpha = 1;

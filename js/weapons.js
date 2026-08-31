@@ -44,26 +44,45 @@ const CLASSES = {
     lifeOnKill: 3,   // pressing forward is how a melee build stays alive
     blurb: 'Every kill returns a sliver of health. Close the distance.',
 
+    // Two stances on the R wheel: reach and speed, or weight and armour.
+    loadout: {
+      kind: 'stance', label: 'Stance', options: [
+        {
+          id: 'swift', name: 'Swift Stance', icon: '≫', color: '#e2b34a',
+          desc: 'Quick, wide swings. Standard reach and guard.',
+          dmg: 1, cd: 1, knock: 1, dr: 0, arc: 1,
+        },
+        {
+          id: 'heavyStance', name: 'Heavy Stance', icon: '▣', color: '#d78a4a',
+          desc: '+45% damage and knockback, 30% slower, and 12% less damage taken.',
+          dmg: 1.45, cd: 1.3, knock: 1.6, dr: 0.12, arc: 1.15,
+        },
+      ],
+    },
+
     onPrimary(p, game) {
       const a = this.primary;
+      const st = p.slotDef;
       p.startSwing(game, {
-        damage: a.damage * p.power,
+        damage: a.damage * p.power * st.dmg,
         range: a.range * p.rangeMul,
-        arc: a.arc * p.arcMul,
-        knock: a.knock * p.knockMul,
-        dur: 0.26, wind: a.wind, heavy: false, stun: 0,
+        arc: a.arc * p.arcMul * st.arc,
+        knock: a.knock * p.knockMul * st.knock,
+        dur: 0.26 * st.cd, wind: a.wind, heavy: false, stun: 0,
       });
       game.audio.swordSwing(false);
     },
 
     onHeavy(p, game, power) {
       const h = this.heavy;
+      const st = p.slotDef;
       p.startSwing(game, {
-        damage: h.damage * power * p.power * p.heavyMul,
+        damage: h.damage * power * p.power * p.heavyMul * st.dmg,
         range: h.range * p.rangeMul,
         arc: (p.whirlwind ? Math.PI * 2 : h.arc) * (p.whirlwind ? 1 : p.arcMul),
-        knock: h.knock * p.knockMul * power,
-        dur: 0.42, wind: h.wind, heavy: true, stun: h.stun * power,
+        knock: h.knock * p.knockMul * power * st.knock,
+        dur: 0.42 * st.cd, wind: h.wind, heavy: true, stun: h.stun * power,
+        impact: true,          // heavy hits get an impact freeze-frame
       });
       game.fx.addShake(5 + 6 * power);
       game.audio.swordSwing(true);
@@ -108,16 +127,16 @@ const CLASSES = {
     energyRegen: 31,
     damageReduction: 0,
 
-    // Deliberately feeble per-shot: the starter slingshot is a training
-    // weapon. Ranger power comes from rate of fire, perks, weapon rank and
-    // the Assault Rifle on the second map.
+    // Update 2.0 damage table: base 15, heavy 20, and each further target a
+    // piercing shot passes through takes 15-16 rather than the full 20.
     primary: {
-      name: 'Pebble', cd: 0.14, cost: 5, damage: 5,
+      name: 'Pebble', cd: 0.3, cost: 5, damage: 15,
       projSpeed: 700, projLife: 1.15, knock: 60,
     },
     heavy: {
-      name: 'Piercing Shot', cd: 0.3, cost: 14, chargeTime: 0.28, damage: 10,
+      name: 'Piercing Shot', cd: 0.45, cost: 14, chargeTime: 0.34, damage: 20,
       projSpeed: 980, projLife: 1.4, pierce: true, knock: 220,
+      pierceMin: 15, pierceMax: 16,
     },
     mobility: { name: 'Roll', cost: 26, cd: 0.5, speed: 700, time: 0.21, iframes: 0.3 },
 
@@ -127,8 +146,25 @@ const CLASSES = {
     lifeOnKill: 0,
     blurb: 'Distant targets take more. Never let them close.',
 
+    // R swaps the whole weapon: elastic and stones, or lobbed explosives.
+    loadout: {
+      kind: 'ordnance', label: 'Ordnance', options: [
+        {
+          id: 'stones', name: 'Stones', icon: '●', color: '#cbd8f0',
+          desc: 'Slingshot. 15 damage a shot, 20 on a charged pierce.',
+        },
+        {
+          id: 'grenades', name: 'Hand Grenades', icon: '✹', color: '#ffb347',
+          desc: 'Lobbed explosives — 20 ammo apiece, big blast, no aiming finesse.',
+          ammoCost: 20,
+        },
+      ],
+    },
+
     onPrimary(p, game) {
       const a = this.primary;
+      if (p.slotDef.id === 'grenades') return this.throwGrenade(p, game, false);
+
       const shots = 1 + p.multishot;
       const spread = shots > 1 ? 0.13 : 0;
       for (let i = 0; i < shots; i++) {
@@ -148,11 +184,15 @@ const CLASSES = {
 
     onHeavy(p, game, power) {
       const h = this.heavy;
+      if (p.slotDef.id === 'grenades') return this.throwGrenade(p, game, true);
+
       p.fireProjectile(game, p.aim, {
         damage: h.damage * power * p.power * p.heavyMul,
         speed: h.projSpeed, life: h.projLife,
         radius: 6 + 6 * power, knock: h.knock * p.knockMul * power,
         pierce: true, heavy: true, color: '#ffffff',
+        // Targets after the first take a reduced 15-16 rather than the full 20.
+        pierceFalloff: { min: h.pierceMin, max: h.pierceMax },
       });
       game.fx.addShake(3 + 4 * power);
       game.fx.spark(p.x + Math.cos(p.aim) * 18, p.y + Math.sin(p.aim) * 18, {
@@ -163,8 +203,33 @@ const CLASSES = {
       game.audio.slingShot(p.weaponTier, true);
     },
 
+    // Grenades bill 20 ammo on top of the normal shot cost, and land as a
+    // delayed ground impact so the blast is something you can walk out of.
+    throwGrenade(p, game, heavy) {
+      const cost = 20 * p.costMul;
+      if (!p.spendEnergy(cost)) {
+        game.fx.text(p.x, p.y - 30, 'need 20 ammo', '#8fa0b8', 12);
+        return;
+      }
+      const range = Math.min(U.dist(p.x, p.y, game.mouseWorld.x, game.mouseWorld.y), 420);
+      const tx = p.x + Math.cos(p.aim) * range;
+      const ty = p.y + Math.sin(p.aim) * range;
+      game.impacts.push({
+        x: tx, y: ty, t: 0, delay: heavy ? 0.9 : 0.7,
+        radius: heavy ? 140 : 105, color: '#ffb347',
+        directRadius: 46,
+        directDamage: (heavy ? 62 : 44) * p.power * (heavy ? p.heavyMul : 1),
+        aoeDamage: (heavy ? 34 : 24) * p.power,
+        hostile: false,
+      });
+      game.fx.spark(p.x + Math.cos(p.aim) * 16, p.y + Math.sin(p.aim) * 16, {
+        count: 6, color: ['#ffb347', '#fff1c9'], dir: p.aim, spread: 0.4, speedMax: 160,
+      });
+      game.audio.slingShot(p.weaponTier, heavy);
+    },
+
     drawWeapon(ctx, p) {
-      if (p.weaponTier > 0) {
+      if (p.weaponTier > Seq.FIRST) {
         // Assault rifle: a blunt scavenged silhouette, not a forked branch.
         ctx.fillStyle = '#4a4a52';
         ctx.fillRect(-2, -2, 24, 4);
@@ -195,6 +260,136 @@ const CLASSES = {
     },
   },
 };
+
+/* ------------------------------------------------------------------ */
+/* Tanker — the riot shield. The only class that can answer a red        */
+/* telegraph without dodging: raising the shield downgrades unblockable  */
+/* attacks to parryable ones, so red indicators literally render blue.   */
+/* ------------------------------------------------------------------ */
+
+Object.assign(CLASSES, {
+  tanker: {
+    id: 'tanker',
+    className: 'Tanker',
+    icon: '⛨',
+    color: '#8fa8c8',
+    torso: '#39485c',
+    dashColors: ['#8fa8c8', '#dfe9f5'],
+    energyName: 'Stamina',
+    energyBar: 'linear-gradient(180deg,#7f9fc4,#2f4a6b)',
+
+    tiers: [
+      { weapon: 'Riot Shield', dmgMul: 1, cdMul: 1, plate: '#9fb4cc', trim: '#5c7490' },
+      { weapon: 'Spiky Shield', dmgMul: 1.5, cdMul: 0.9, plate: '#c2ccd8', trim: '#8a6a42', spikes: true },
+    ],
+
+    maxHp: 200,
+    speed: 118,                 // heaviest, slowest thing in the deep
+    maxEnergy: 120,
+    energyRegen: 22,
+    damageReduction: 0.25,
+
+    primary: {
+      name: 'Shield Bash', cd: 0.42, cost: 0, damage: 19,
+      range: 58, arc: 1.35, knock: 320, wind: 0.09,
+    },
+    heavy: { name: 'Brace', cd: 0.6, cost: 34, chargeTime: 0.45 },
+    mobility: { name: 'Dash', cost: 30, cd: 0.6, speed: 620, time: 0.2, iframes: 0.26 },
+
+    // Charging the heavy raises the shield, so blocking and committing are
+    // the same act — you brace, and while braced nothing is unblockable.
+    blocksWhileCharging: true,
+    blockDR: 0.6,
+
+    loadout: {
+      kind: 'brace', label: 'Brace Mode', options: [
+        {
+          id: 'heavyDash', name: 'Heavy Dash', icon: '➤', color: '#8fa8c8',
+          desc: 'Charge forward behind the shield, trampling everything in the lane.',
+        },
+        {
+          id: 'heavySlam', name: 'Heavy Slam', icon: '⊙', color: '#c8a86a',
+          desc: 'Drive the shield down for a heavy radial shockwave.',
+        },
+      ],
+    },
+
+    lifeOnKill: 2,
+    blurb: 'Raise the shield and red turns blue. Nothing is unblockable to you.',
+
+    onPrimary(p, game) {
+      const a = this.primary;
+      p.startSwing(game, {
+        damage: a.damage * p.power,
+        range: a.range * p.rangeMul,
+        arc: a.arc * p.arcMul,
+        knock: a.knock * p.knockMul,
+        dur: 0.28, wind: a.wind, heavy: false, stun: 0.25,
+      });
+      game.audio.impact(false);
+    },
+
+    onHeavy(p, game, power) {
+      if (p.slotDef.id === 'heavyDash') {
+        // A committed shoulder-charge: invulnerable, and it flattens a lane.
+        p.dashT = 0.34;
+        p.dashDir = p.aim;
+        p.iframes = Math.max(p.iframes, 0.4);
+        p.dashHit.clear();
+        p.shieldChargeDmg = 40 * power * p.power * p.heavyMul;
+        game.fx.ring(p.x, p.y, 26, '#8fa8c8', 20);
+        game.fx.addShake(6);
+        game.audio.swordSwing(true);
+        return;
+      }
+      // Heavy Slam: radial shockwave centred on the player.
+      const radius = 148 * p.rangeMul;
+      const dmg = 54 * power * p.power * p.heavyMul;
+      for (const e of game.enemyHash.query(p.x, p.y, radius, [])) {
+        if (e.dead || U.dist(p.x, p.y, e.x, e.y) > radius) continue;
+        e.takeDamage(dmg, game, p.x, p.y, 640 * p.knockMul, false);
+        e.stun = Math.max(e.stun, 0.8);
+      }
+      game.impactFreeze(0.09);
+      game.fx.ring(p.x, p.y, radius * 0.6, '#c8a86a', 44);
+      game.fx.spark(p.x, p.y, {
+        count: 34, color: ['#c8a86a', '#ffffff', '#8fa8c8'], speedMax: 380, lifeMax: 0.7, sizeMax: 5,
+      });
+      game.fx.addShake(14);
+      game.audio.explode();
+    },
+
+    drawWeapon(ctx, p) {
+      const t = p.tier;
+      const braced = p.charging;
+      ctx.rotate(braced ? 0 : -0.25);
+      // Shield face, held out front and squared up when bracing.
+      ctx.fillStyle = t.plate;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(6, -13, 11, 26, 3) : ctx.rect(6, -13, 11, 26);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,.28)';
+      ctx.fillRect(6, -13, 11, 4);
+      ctx.strokeStyle = t.trim;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(11.5, -11); ctx.lineTo(11.5, 11); ctx.stroke();
+      if (t.spikes) {
+        ctx.fillStyle = '#e8eef5';
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(17, i * 8 - 3); ctx.lineTo(25, i * 8); ctx.lineTo(17, i * 8 + 3);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+      if (braced) {
+        ctx.globalAlpha = 0.45 + Math.sin(p.chargeT * 18) * 0.2;
+        ctx.strokeStyle = '#8fd4ff';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(12, 0, 20, -1.1, 1.1); ctx.stroke();
+      }
+    },
+  },
+});
 
 /* ------------------------------------------------------------------ */
 /* Casters. Both carry a staff and a four-slot loadout cycled with R.
@@ -285,30 +480,40 @@ const ELEMENTS = [
       });
       game.audio.cast('air', false);
     },
+    /* Update 2.0: the Air heavy is the Mage's panic button. A full-screen
+       tornado that simply deletes anything ordinary caught in it — and
+       leaves you at zero mana AND zero stamina, so it is a genuine
+       all-or-nothing. Elites and bosses take heavy damage instead. */
     heavy(p, game) {
-      // A cone in front. Elites and bosses are simply too heavy to move.
-      const hit = game.enemyHash.query(p.x, p.y, 300, []);
-      let moved = 0;
-      for (const e of hit) {
-        const d = U.dist(p.x, p.y, e.x, e.y);
-        if (d > 300) continue;
-        if (Math.abs(U.angleDiff(p.aim, U.angle(p.x, p.y, e.x, e.y))) > 0.75) continue;
-        e.takeDamage(12 * p.power, game, p.x, p.y, 0, false);
+      const radius = 460 * p.rangeMul;
+      let executed = 0, resisted = 0;
+      for (const e of game.enemyHash.query(p.x, p.y, radius, [])) {
+        if (e.dead || U.dist(p.x, p.y, e.x, e.y) > radius) continue;
         if (!e.elite && !e.def.boss) {
-          const a = U.angle(p.x, p.y, e.x, e.y);
-          e.vx += Math.cos(a) * 900;
-          e.vy += Math.sin(a) * 900;
-          e.stun = Math.max(e.stun, 0.5);
-          moved++;
+          e.takeDamage(e.hp + 9999, game, p.x, p.y, 0, false);
+          executed++;
+        } else {
+          e.takeDamage(90 * p.power * p.heavyMul, game, p.x, p.y, 260, true);
+          e.stun = Math.max(e.stun, 0.7);
+          resisted++;
         }
       }
-      if (!moved) game.fx.text(p.x, p.y - 44, 'unmoved', '#8fa0b8', 12);
+      // The whole cost, not a fraction of it.
+      p.mana = 0;
+      p.energy = 0;
+      game.tempest(1.35);          // canvas blur/darken while the wind passes
+      game.impactFreeze(0.12);
+      game.fx.ring(p.x, p.y, radius * 0.42, '#e6f0ff', 60);
+      game.fx.ring(p.x, p.y, radius * 0.7, '#9fb8d8', 46);
       game.fx.spark(p.x, p.y, {
-        count: 30, color: ['#e6f0ff', '#9fb8d8'], dir: p.aim, spread: 0.75,
-        speedMax: 420, lifeMax: 0.5, glow: false,
+        count: 90, color: ['#e6f0ff', '#9fb8d8', '#ffffff'],
+        speedMax: 620, lifeMax: 1.1, sizeMax: 5, glow: false,
       });
-      game.fx.addShake(5);
+      game.fx.addShake(22);
+      game.fx.text(p.x, p.y - 56, executed ? `${executed} SWEPT AWAY` : 'THE WIND PASSES', '#e6f0ff', 20);
+      if (resisted) game.fx.text(p.x, p.y - 32, `${resisted} held fast`, '#8fa0b8', 13);
       game.audio.cast('air', true);
+      game.audio.explode();
     },
   },
 ];
@@ -414,13 +619,13 @@ Object.assign(CLASSES, {
     blurb: 'Four elements on the wheel. R switches; each has its own heavy.',
 
     onPrimary(p, game) {
-      const el = ELEMENTS[p.slot];
+      const el = Seq.get(ELEMENTS, p.slot);
       if (!p.spendMana(el.cost * p.costMul)) return;
       el.primary(p, game);
     },
 
     onHeavy(p, game, power) {
-      const el = ELEMENTS[p.slot];
+      const el = Seq.get(ELEMENTS, p.slot);
       const cost = p.maxMana * el.heavyCostFrac * p.costMul;
       if (!p.spendMana(cost)) return;
       el.heavy(p, game, power);
@@ -428,7 +633,7 @@ Object.assign(CLASSES, {
 
     drawWeapon(ctx, p) {
       const t = p.tier;
-      const el = ELEMENTS[p.slot];
+      const el = Seq.get(ELEMENTS, p.slot);
       ctx.rotate(-0.3);
       ctx.strokeStyle = t.wood;
       ctx.lineWidth = 3.4;

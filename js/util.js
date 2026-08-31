@@ -72,6 +72,58 @@ const U = {
 };
 
 /* ------------------------------------------------------------------ */
+/* 1-based sequence helpers (Update 2.0 architectural rule).           */
+/*                                                                     */
+/* Every authored sequence — save slots, UI slots, loadout slots, map  */
+/* numbers, shrine ids, boss table entries — counts from 1. These are  */
+/* the only places the +1/-1 lives, so the convention is greppable     */
+/* instead of smeared through the codebase as bare arithmetic.         */
+/*                                                                     */
+/* Raw storage arrays stay dense and 0-based underneath; `Seq` is the  */
+/* adapter between the two. Engine buffers addressed by hardware/DOM   */
+/* contracts (tile grid, spatial buckets, typed arrays, pixel data)    */
+/* are exempt — renumbering those is an off-by-one, not a convention.  */
+/* ------------------------------------------------------------------ */
+
+const ONE_BASED = 1;
+
+const Seq = {
+  FIRST: ONE_BASED,
+
+  // [1, 2, ... count]
+  range(first, count) {
+    const out = [];
+    for (let n = first; n < first + count; n++) out.push(n);
+    return out;
+  },
+
+  // 1-based number -> dense array index
+  toIndex(n) { return n - ONE_BASED; },
+  // dense array index -> 1-based number
+  toNumber(i) { return i + ONE_BASED; },
+
+  // Read/write a dense array with a 1-based number.
+  get(arr, n) { return arr[n - ONE_BASED]; },
+  set(arr, n, v) { arr[n - ONE_BASED] = v; return v; },
+
+  // Iterate a dense array yielding (value, 1-basedNumber).
+  each(arr, fn) { arr.forEach((v, i) => fn(v, i + ONE_BASED)); },
+  map(arr, fn) { return arr.map((v, i) => fn(v, i + ONE_BASED)); },
+
+  // Clamp a 1-based number to a dense array's valid range.
+  clampTo(arr, n) { return U.clamp(n, ONE_BASED, arr.length - 1 + ONE_BASED); },
+
+  // Wrap a 1-based number around a dense array (for cycling loadout slots).
+  wrapTo(arr, n) {
+    const len = arr.length;
+    return ((n - ONE_BASED) % len + len) % len + ONE_BASED;
+  },
+
+  count(arr) { return arr.length; },
+  last(arr) { return arr.length - 1 + ONE_BASED; },
+};
+
+/* ------------------------------------------------------------------ */
 /* Visual effects: particles, floating combat text, screen shake.      */
 /* ------------------------------------------------------------------ */
 

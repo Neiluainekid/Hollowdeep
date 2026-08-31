@@ -10,6 +10,7 @@
 // index 0 is the entrance, the last index is the boss's doorstep.
 const MAPS = [
   {
+    number: 1,                 // 1-based: maps are "Map 1" and "Map 2"
     id: 'tripolisis',
     name: 'Tripolisis',
     subtitle: 'Dungeon of Chaos',
@@ -40,6 +41,7 @@ const MAPS = [
     ],
   },
   {
+    number: 2,
     id: 'sarapolis',
     name: 'Sarapolis',
     subtitle: 'Dungeon of Devastation',
@@ -72,4 +74,17 @@ const MAPS = [
     ],
   },
 ];
+
+/* Maps are addressed by 1-based number everywhere outside this file — the
+   save format, the HUD and the run sequencer all say "map 1" / "map 2". */
+const Maps = {
+  FIRST: Seq.FIRST,
+  get LAST() { return Seq.last(MAPS); },
+  count() { return MAPS.length; },
+
+  byNumber(n) { return Seq.get(MAPS, Seq.clampTo(MAPS, n)); },
+  isLast(n) { return n >= this.LAST; },
+  next(n) { return Math.min(this.LAST, n + 1); },
+  numbers() { return Seq.range(Seq.FIRST, MAPS.length); },
+};
 
