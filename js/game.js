@@ -839,6 +839,44 @@ class Game {
     } else if (prop.type === 'redshrine') {
       this.wakeRedShrine(prop);
 
+    } else if (prop.type === 'classshrine') {
+      prop.used = true;
+      const s = prop.shrine;
+      if (Shrines.matches(s, p)) {
+        s.apply(p);
+        this.fx.text(prop.x, prop.y - 30, s.name, s.color, 18);
+        this.toast(`${s.name} — ${s.boon}`, 4.5);
+        this.fx.ring(prop.x, prop.y, 40, s.color, 30);
+        this.audio.freeze();
+      } else {
+        // Wrong altar: it still gives you something, just not its gift.
+        const gold = Math.round(U.randi(20, 55) * p.goldMul);
+        p.gold += gold;
+        p.heal(12);
+        this.fx.text(prop.x, prop.y - 30, `not your altar  +${gold}`, '#8fa0b8', 14);
+        this.toast(`${s.name} does not answer to a ${p.cls.className.toLowerCase()}.`, 3.5);
+        this.audio.blip(240, 0.2, 0.1, 'triangle');
+      }
+
+    } else if (prop.type === 'yellowshrine') {
+      prop.used = true;
+      const { blessed, effect } = prop.roll;
+      effect.apply(p);
+      this.fx.ring(prop.x, prop.y, 46, blessed ? '#ffd479' : '#b03a2f', 34);
+      this.fx.spark(prop.x, prop.y, {
+        count: 30, color: blessed ? ['#ffd479', '#fff1c9'] : ['#b03a2f', '#ff6b52'],
+        speedMax: 260, lifeMax: 0.8, sizeMax: 4,
+      });
+      this.fx.text(prop.x, prop.y - 32, blessed ? 'BLESSED' : 'CURSED',
+        blessed ? '#ffd479' : '#ff6b52', 20);
+      this.toast(`${blessed ? 'Blessing' : 'Curse'} — ${effect.name}: ${effect.desc}`, 4.5);
+      this.fx.addFlash(blessed ? '#ffd479' : '#c8452f', 0.28);
+      this.audio[blessed ? 'freeze' : 'explode']();
+      this.hudCache.prompt = null;
+
+    } else if (prop.type === 'corruptshrine') {
+      this.wakeCorruptShrine(prop);
+
     } else if (prop.type === 'gate') {
       if (this.bossDefeated) return;
       // The gate stays bound until every red shrine is out.
@@ -871,8 +909,8 @@ class Game {
     const count = 4 + Math.min(3, Math.floor(threat / 2));
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + U.rand(-0.3, 0.3);
-      const r = U.rand(90, 170);
-      const e = this.spawnEnemy(U.pick(table), prop.x + Math.cos(a) * r, prop.y + Math.sin(a) * r,
+      const spot = this.safeSpawnNear(prop.x, prop.y, U.rand(90, 170), a);
+      const e = this.spawnEnemy(U.pick(table), spot.x, spot.y,
         threat, i === count - 1);
       e.aggro = true;
       e.guardian = prop;   // marks it on screen and on the minimap
@@ -885,6 +923,51 @@ class Game {
     this.fx.addFlash('#c8452f', 0.35);
     this.toast('The shrine calls its guardians. Put them down.', 4);
     this.audio.blip(90, 0.6, 0.18, 'sawtooth');
+  }
+
+  /* Corrupted shrine: wakes a single oversized elite. The shrine cannot be
+     claimed until it is dead, and the payout is worth the fight. */
+  wakeCorruptShrine(prop) {
+    if (prop.used || prop.active) return;
+    prop.active = true;
+
+    const threat = prop.room.threat + 1;
+    const a = U.rand(0, Math.PI * 2);
+    const spot = this.safeSpawnNear(prop.x, prop.y, 110, a);
+    const boss = this.spawnEnemy(prop.minibossType, spot.x, spot.y, threat, true);
+    boss.aggro = true;
+    boss.maxHp = Math.round(boss.maxHp * 1.8);
+    boss.hp = boss.maxHp;
+    boss.corruptGuard = prop;
+    boss.titleName = 'Corrupted ' + boss.def.name;
+    prop.guard = boss;
+
+    this.fx.ring(prop.x, prop.y, 70, '#b05cff', 44);
+    this.fx.addShake(11);
+    this.fx.addFlash('#b05cff', 0.4);
+    this.toast('The corruption answers. Something wakes.', 4);
+    this.audio.blip(80, 0.7, 0.2, 'sawtooth');
+  }
+
+  updateCorruptShrines() {
+    for (const prop of this.dungeon.props) {
+      if (prop.type !== 'corruptshrine' || !prop.active || prop.used) continue;
+      if (prop.guard && !prop.guard.dead) continue;
+
+      prop.active = false;
+      prop.used = true;
+      const p = this.player;
+      const gold = Math.round(U.randi(90, 190) * p.goldMul);
+      p.gold += gold;
+      this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
+      this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
+      this.pickups.push(new Pickup('heart', prop.x, prop.y, 30));
+      this.fx.ring(prop.x, prop.y, 60, '#b05cff', 40);
+      this.fx.text(prop.x, prop.y - 30, `corruption cleansed  +${gold}`, '#d0a6ff', 17);
+      this.toast('The corrupted shrine goes quiet. It pays what it owes.', 4);
+      this.audio.freeze();
+      this.hudCache.prompt = null;
+    }
   }
 
   updateRedShrines() {
@@ -932,7 +1015,56 @@ class Game {
     this.audio.blip(70, 0.7, 0.2, 'sawtooth');
   }
 
+  /* Shrine summons used to drop guardians on a bare ring, which could put
+     them inside a wall or outside the world — where the spatial hash indexes
+     them into a cell nothing ever queries, so they hang unreachable. This
+     walks inward and then spirals until it finds real, walkable floor. */
+  safeSpawnNear(x, y, radius, angle) {
+    const d = this.dungeon;
+    const maxX = (d.w - 1) * TILE, maxY = (d.h - 1) * TILE;
+    const ok = (px, py) =>
+      px > TILE && py > TILE && px < maxX && py < maxY && !d.isSolidAt(px, py);
+
+    // Preferred: on the requested ring, sweeping angles then closing inward.
+    for (let ring = 0; ring < 8; ring++) {
+      const r = radius * (1 - ring * 0.11);
+      for (let step = 0; step < 12; step++) {
+        const a = angle + step * (Math.PI / 6);
+        const px = U.clamp(x + Math.cos(a) * r, TILE, maxX);
+        const py = U.clamp(y + Math.sin(a) * r, TILE, maxY);
+        if (ok(px, py)) return { x: px, y: py };
+      }
+    }
+
+    /* Fallback: an actual outward tile scan. The old version returned the
+       requested point when the ring search failed, which handed back the very
+       solid tile it was asked to avoid — so a guardian could still be walled
+       in. Searching tile centres cannot fail on a connected map. */
+    const cx = Math.floor(x / TILE), cy = Math.floor(y / TILE);
+    for (let rad = 1; rad <= 14; rad++) {
+      for (let ty = cy - rad; ty <= cy + rad; ty++) {
+        for (let tx = cx - rad; tx <= cx + rad; tx++) {
+          // Perimeter of this square ring only.
+          if (Math.abs(ty - cy) !== rad && Math.abs(tx - cx) !== rad) continue;
+          if (!d.inBounds(tx, ty) || d.isSolidTile(tx, ty)) continue;
+          return { x: (tx + 0.5) * TILE, y: (ty + 0.5) * TILE };
+        }
+      }
+    }
+    // Nothing within 14 tiles: put it on the player, who is provably standing
+    // on floor. Better a bad placement than an unreachable one.
+    return { x: this.player.x, y: this.player.y };
+  }
+
   spawnEnemy(type, x, y, threat, elite, room = null) {
+    /* Last-line guard. An enemy whose centre starts inside rock never gets
+       pushed out — resolveAxis is a no-op at zero velocity — so it would sit
+       there permanently, indexed into a spatial cell you can never reach.
+       Snap it onto real floor before it ever enters the world. */
+    if (this.dungeon && this.dungeon.isSolidAt(x, y)) {
+      const safe = this.safeSpawnNear(x, y, 34, U.rand(0, Math.PI * 2));
+      x = safe.x; y = safe.y;
+    }
     const e = new Enemy(type, x, y, threat, elite);
     e.room = room;
     if (room) room.alive = (room.alive || 0) + 1;
@@ -1063,6 +1195,7 @@ class Game {
     }
 
     this.updateRedShrines();
+    this.updateCorruptShrines();
     this.fx.update(dt);
     this.dungeon.markExplored(this.player.x, this.player.y, 9);
 
@@ -1179,16 +1312,26 @@ class Game {
     if (cache.prompt !== key) {
       cache.prompt = key;
       if (prop) {
-        const labels = {
-          chest: prop.rich ? 'open the <b>warded chest</b>' : 'open the <b>chest</b>',
-          fountain: 'drink from the <b>fountain</b>',
-          shrine: 'touch the <b>shrine</b>',
-          redshrine: 'break the <b>red shrine</b>',
-          gate: this.shrinesDown >= this.dungeon.redShrineCount
+        // Built lazily: an eager object literal would evaluate every branch,
+      // and prop.shrine only exists on class shrines.
+      const label = (() => {
+        switch (prop.type) {
+          case 'chest': return prop.rich ? 'open the <b>warded chest</b>' : 'open the <b>chest</b>';
+          case 'fountain': return 'drink from the <b>fountain</b>';
+          case 'shrine': return 'touch the <b>shrine</b>';
+          case 'redshrine': return 'break the <b>red shrine</b>';
+          case 'classshrine': return Shrines.matches(prop.shrine, p)
+            ? `claim the <b>${prop.shrine.name}</b>`
+            : `touch the <b>${prop.shrine.name}</b> (not yours)`;
+          case 'yellowshrine': return 'gamble at the <b>yellow shrine</b>';
+          case 'corruptshrine': return 'disturb the <b>corrupted shrine</b>';
+          case 'gate': return this.shrinesDown >= this.dungeon.redShrineCount
             ? 'open the <b>gate</b>'
-            : `the gate is <b>bound</b> — ${this.shrinesDown}/${this.dungeon.redShrineCount} shrines`,
-        };
-        promptEl.innerHTML = `<b>E</b> — ${labels[prop.type]}`;
+            : `the gate is <b>bound</b> — ${this.shrinesDown}/${this.dungeon.redShrineCount} shrines`;
+          default: return `use the <b>${prop.type}</b>`;
+        }
+      })();
+      promptEl.innerHTML = `<b>E</b> — ${label}`;
         promptEl.classList.remove('hidden');
       } else {
         promptEl.classList.add('hidden');
@@ -1430,6 +1573,40 @@ class Game {
           }
         }
 
+      } else if (prop.type === 'classshrine' || prop.type === 'yellowshrine' || prop.type === 'corruptshrine') {
+        const gl = Shrines.glyph(prop);
+        const dead = prop.used;
+        const corrupt = prop.type === 'corruptshrine';
+        ctx.fillStyle = 'rgba(0,0,0,.36)';
+        ctx.beginPath(); ctx.ellipse(x, y + 14, 15, 6, 0, 0, Math.PI * 2); ctx.fill();
+
+        // Plinth
+        ctx.fillStyle = dead ? '#2a2730' : '#3a3446';
+        ctx.beginPath();
+        ctx.moveTo(x - 11, y + 13); ctx.lineTo(x - 8, y - 12);
+        ctx.lineTo(x + 8, y - 12); ctx.lineTo(x + 11, y + 13);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = dead ? '#3a3540' : '#4d4560';
+        ctx.fillRect(x - 9, y - 12, 18, 3.5);
+
+        if (!dead) {
+          const t2 = corrupt && prop.active ? this.time * 9 : this.time * 2;
+          const fy = y - 26 + Math.sin(t2) * 3.5;
+          ctx.shadowBlur = 24; ctx.shadowColor = gl.color;
+          ctx.fillStyle = gl.color;
+          ctx.globalAlpha = 0.9;
+          ctx.font = '700 17px system-ui';
+          ctx.textAlign = 'center';
+          ctx.fillText(gl.icon, x, fy + 6);
+          ctx.globalAlpha = 0.28 + Math.sin(t2 * 1.4) * 0.1;
+          ctx.beginPath(); ctx.arc(x, fy, 15, 0, Math.PI * 2); ctx.fill();
+          if (corrupt && prop.active) {
+            ctx.globalAlpha = 0.5;
+            ctx.strokeStyle = gl.color; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(x, y, 42 + Math.sin(this.time * 6) * 5, 0, Math.PI * 2); ctx.stroke();
+          }
+        }
+
       } else if (prop.type === 'gate') {
         const done = this.bossDefeated;
         ctx.strokeStyle = done ? '#4a4a56' : '#c8452f';
@@ -1467,6 +1644,65 @@ class Game {
       ctx.fillStyle = '#4b3a2a';
       ctx.fillRect(tor.x - 2, tor.y - 2, 4, 8);
       ctx.restore();
+    }
+  }
+
+  /* Objective compass. Red shrines are the run's spine, so they get a large
+     arrow at any distance; every other unclaimed shrine gets a small one, and
+     only when you are close enough for it to be a real choice. */
+  drawObjectiveArrows(ctx) {
+    if (!this.dungeon || this.state !== 'playing') return;
+    const px = this.player.x, py = this.player.y;
+    const cx = this.vw / 2, cy = this.vh / 2;
+    const ringBig = Math.min(this.vw, this.vh) * 0.40;
+    const ringSmall = Math.min(this.vw, this.vh) * 0.31;
+
+    for (const prop of this.dungeon.props) {
+      if (prop.used) continue;
+      const isRed = prop.type === 'redshrine';
+      const isOther = prop.type === 'classshrine' || prop.type === 'yellowshrine'
+        || prop.type === 'corruptshrine';
+      if (!isRed && !isOther) continue;
+
+      const dist = U.dist(px, py, prop.x, prop.y);
+      if (!isRed && dist > 900) continue;           // small arrows are local only
+      if (isRed && !this.dungeon.isExplored(Math.floor(prop.x / TILE), Math.floor(prop.y / TILE))
+          && dist > 1400) continue;
+
+      // Already on screen? Then the shrine speaks for itself.
+      const sx = prop.x - this.cam.x, sy = prop.y - this.cam.y;
+      if (sx > 40 && sx < this.vw - 40 && sy > 40 && sy < this.vh - 40) continue;
+
+      const gl = Shrines.glyph(prop);
+      const a = U.angle(px, py, prop.x, prop.y);
+      const ring = isRed ? ringBig : ringSmall;
+      const ax = cx + Math.cos(a) * ring, ay = cy + Math.sin(a) * ring;
+      const size = isRed ? 15 : 7;
+
+      ctx.save();
+      ctx.translate(ax, ay);
+      ctx.rotate(a);
+      ctx.globalAlpha = isRed ? 0.65 + Math.sin(this.time * 3) * 0.2 : 0.42;
+      ctx.fillStyle = gl.color;
+      if (isRed) { ctx.shadowBlur = 12; ctx.shadowColor = gl.color; }
+      ctx.beginPath();
+      ctx.moveTo(size, 0);
+      ctx.lineTo(-size * 0.62, -size * 0.62);
+      ctx.lineTo(-size * 0.62, size * 0.62);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      if (isRed) {
+        ctx.save();
+        ctx.globalAlpha = 0.7;
+        ctx.fillStyle = gl.color;
+        ctx.font = '600 10px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${Math.round(dist / TILE)}m`,
+          cx + Math.cos(a) * (ring + 20), cy + Math.sin(a) * (ring + 20));
+        ctx.restore();
+      }
     }
   }
 
@@ -1918,6 +2154,8 @@ class Game {
       mark(s.x, s.y, '#ff8a6a', 11);
     }
 
+    this.drawObjectiveArrows(ctx);
+
     // Off-screen pointer to the Warden's Gate once you've found it
     if (this.gateFound && !this.bossDefeated && this.dungeon.boss) {
       const gx = this.dungeon.boss.wx, gy = this.dungeon.boss.wy;
@@ -2001,9 +2239,11 @@ class Game {
       const tx = prop.x / TILE, ty = prop.y / TILE;
       if (!d.isExplored(Math.floor(tx), Math.floor(ty))) continue;
       if (prop.used && prop.type !== 'gate') continue;
-      c.fillStyle = prop.type === 'gate' ? '#ffffff' : prop.type === 'redshrine' ? '#ff3b1f'
-        : prop.type === 'shrine' ? '#7ea8ff' : prop.type === 'fountain' ? '#4fd0a8' : '#e2b34a';
-      c.fillRect((tx - pcx + span / 2) * scale - 2, (ty - pcy + span / 2) * scale - 2, 4.5, 4.5);
+      const gl = Shrines.glyph(prop);
+      c.fillStyle = gl.color;
+      c.font = `${gl.big ? 13 : 10}px system-ui`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(gl.icon, (tx - pcx + span / 2) * scale, (ty - pcy + span / 2) * scale);
     }
 
     for (const e of this.enemies) {
@@ -2042,9 +2282,11 @@ class Game {
       const tx = Math.floor(prop.x / TILE), ty = Math.floor(prop.y / TILE);
       if (!d.isExplored(tx, ty)) continue;
       if (prop.used && prop.type !== 'gate') continue;
-      c.fillStyle = prop.type === 'gate' ? '#ffffff' : prop.type === 'redshrine' ? '#ff3b1f'
-        : prop.type === 'shrine' ? '#7ea8ff' : prop.type === 'fountain' ? '#4fd0a8' : '#e2b34a';
-      c.fillRect(ox + tx * scale - 2, oy + ty * scale - 2, 5, 5);
+      const gl = Shrines.glyph(prop);
+      c.fillStyle = gl.color;
+      c.font = `${gl.big ? 15 : 12}px system-ui`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(gl.icon, ox + tx * scale, oy + ty * scale);
     }
 
     c.fillStyle = '#fff';

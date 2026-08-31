@@ -388,6 +388,57 @@ class Dungeon {
     }
 
     this.placeRedShrines();
+    this.placeUpdate2Shrines();
+  }
+
+  /* Class shrines, yellow shrines and corrupted shrines. All seeded, so the
+     same world always offers the same choices in the same places. */
+  placeUpdate2Shrines() {
+    const r = this.rng;
+    const free = this.rooms.filter(room =>
+      room.kind !== 'start' && room.kind !== 'boss' && !room.hasRedShrine && !room.hasShrine2);
+
+    const take = (n) => {
+      const out = [];
+      const pool = free.slice();
+      for (let i = 0; i < n && pool.length; i++) {
+        const idx = r.int(0, pool.length);
+        const room = pool.splice(idx, 1)[0];
+        room.hasShrine2 = true;
+        out.push(room);
+        const at = free.indexOf(room);
+        if (at >= 0) free.splice(at, 1);
+      }
+      return out;
+    };
+
+    // One of each of the eight class shrines, scattered.
+    for (const number of Shrines.numbers()) {
+      const room = take(1)[0];
+      if (!room) break;
+      this.props.push({
+        type: 'classshrine', ...this.spotIn(room, 1),
+        room, used: false, shrine: Shrines.byNumber(number),
+      });
+    }
+
+    // Yellow: the gamble. Rolled at generation so the seed decides, not the
+    // moment you touch it — no save-scumming the outcome.
+    for (const room of take(r.int(3, 6))) {
+      this.props.push({
+        type: 'yellowshrine', ...this.spotIn(room, 1),
+        room, used: false, roll: Shrines.rollYellow(r),
+      });
+    }
+
+    // Corrupted: wakes a miniboss, pays out when it dies.
+    for (const room of take(r.int(2, 4))) {
+      this.props.push({
+        type: 'corruptshrine', ...this.spotIn(room, 1),
+        room, used: false, active: false, guard: null,
+        minibossType: Shrines.rollMiniboss(r),
+      });
+    }
   }
 
   /* Five red shrines bind the boss gate shut. They are spread evenly along

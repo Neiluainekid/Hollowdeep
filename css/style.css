@@ -227,6 +227,8 @@ h1{
 .btn.danger:hover{background:rgba(200,69,47,.24)}
 
 #bigmap{background:rgba(4,4,7,.85);border-radius:8px;max-width:100%;border:1px solid rgba(255,255,255,.09)}
+.ic{display:inline-block;font-size:13px;vertical-align:middle;margin-right:2px}
+.ic.you{color:#fff}
 .key{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:middle;margin-right:2px}
 .key.you{background:#fff}
 .key.chest{background:var(--gold)}
