@@ -122,6 +122,24 @@ region scaling, each with a named health bar:
 | **The Sun God** — *Predicament King* | Sarapolis | A corona of rays; relentless ranged pressure |
 | **Judgement** — *Pure Devastation* | Sarapolis (final) | Clenched fists and almost nothing but charges |
 
+## Art
+
+Every creature has its own silhouette and its own attack animation, all in
+`js/art.js`. Two shared ideas do the work rather than per-enemy timelines:
+
+- **`Art.pose`** turns attack state into a pose — the wind-up coils back and
+  compresses, the active frame snaps forward and stretches, recovery settles.
+  Every creature animates its attacks from this for free, and the pose is
+  driven by the same timings the parry system reads, so what you see is
+  exactly what you are timing against.
+- **`Art.gait`** derives a walk cycle from actual velocity, so things stride
+  faster when they move faster.
+
+Creatures are flipped rather than rotated when facing left, because a full
+rotation reads badly from overhead. The player has a per-class build — the
+Tanker is broad and helmed, the casters are robed and hooded, the Ranger is
+lean — with legs that stride and a torso that leans into a swing.
+
 ## Companions
 
 Two are found locked in cages and freed with `E`; the third decides for himself.
@@ -243,6 +261,9 @@ js/spatial.js     uniform-grid spatial hash for all proximity queries
 js/save.js        localStorage persistence and explored-map packing
 js/maps.js        map definitions: size, palettes, spawn tables, boss
 js/dungeon.js     procedural generation, regions, props, lighting anchors
+js/art.js         every creature and player silhouette, plus attack poses
+js/shrines.js     shrine families, outcomes and the shared icon table
+js/npcs.js        companions: The Disgraced One, Switcher, John Space
 js/summons.js     Necromancer minions and Mage ground effects
 js/weapons.js     the classes and the perk pools — the core design file
 js/entities.js    player, enemies, projectiles, pickups

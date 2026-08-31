@@ -2056,52 +2056,14 @@ class Game {
       ctx.shadowBlur = e.elite || e.def.boss ? 20 : 0;
       ctx.shadowColor = e.def.color;
 
-      if (e.type === 'slime') {
-        const squish = 1 + Math.sin(e.bob * 1.3) * 0.12;
-        ctx.beginPath();
-        ctx.ellipse(x, y + e.radius * (1 - squish) * 0.5, e.radius * squish, e.radius / squish, 0, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (e.type === 'bat') {
-        const flap = Math.sin(e.bob * 3.2) * e.radius * 0.9;
-        ctx.beginPath();
-        ctx.moveTo(x - e.radius * 1.7, y + flap);
-        ctx.quadraticCurveTo(x, y - e.radius, x + e.radius * 1.7, y + flap);
-        ctx.quadraticCurveTo(x, y + e.radius * 0.9, x - e.radius * 1.7, y + flap);
-        ctx.fill();
-        ctx.beginPath(); ctx.arc(x, y, e.radius * 0.62, 0, Math.PI * 2); ctx.fill();
-      } else if (e.type === 'wraith') {
-        ctx.beginPath();
-        ctx.moveTo(x, y - e.radius);
-        ctx.quadraticCurveTo(x + e.radius, y, x + e.radius * 0.7, y + e.radius);
-        for (let i = 0; i < 4; i++) {
-          const t2 = i / 3;
-          ctx.quadraticCurveTo(
-            x + e.radius * 0.7 - e.radius * 1.4 * (t2 + 0.12),
-            y + e.radius + Math.sin(this.time * 5 + i) * 4,
-            x + e.radius * 0.7 - e.radius * 1.4 * (t2 + 0.25), y + e.radius);
-        }
-        ctx.quadraticCurveTo(x - e.radius, y, x, y - e.radius);
-        ctx.fill();
-      } else if (e.def.palette) {
+      if (e.def.palette) {
         this.drawBossForm(ctx, e, x, y, body);
       } else {
-        // brute / skeleton — blocky silhouette
-        const w = e.radius * 1.5, h = e.radius * 1.9;
-        ctx.fillRect(x - w / 2, y - h / 2, w, h);
-        ctx.fillStyle = e.flash > 0 ? '#fff' : e.def.dark;
-        ctx.fillRect(x - w / 2, y - h / 2, w, h * 0.28);
-        ctx.fillStyle = body;
-        ctx.beginPath(); ctx.arc(x, y - h / 2 - e.radius * 0.35, e.radius * 0.55, 0, Math.PI * 2); ctx.fill();
+        // Every ordinary creature now has its own silhouette and its own
+        // attack animation, both driven from js/art.js.
+        Art.drawEnemy(ctx, e, x, y, this.time, body);
       }
 
-      // eyes
-      if (!e.def.ghost) {
-        ctx.shadowBlur = 8; ctx.shadowColor = '#ff5a3c';
-        ctx.fillStyle = e.aggro ? '#ff6b52' : '#1a1a20';
-        const ex = e.def.ai === 'boss' ? 9 : 4;
-        ctx.fillRect(x - ex - 2, y - e.radius * 0.35, 3.2, 3.2);
-        ctx.fillRect(x + ex - 1, y - e.radius * 0.35, 3.2, 3.2);
-      }
       ctx.restore();
 
       // health bar for elites & wounded enemies
@@ -2312,14 +2274,9 @@ class Game {
       }
     }
 
-    // Body
+    // Body — per-class silhouette with a walk cycle, from js/art.js.
     if (p.iframes > 0 && Math.floor(this.time * 24) % 2 === 0) ctx.globalAlpha = 0.45;
-    ctx.fillStyle = p.hurtFlash > 0 ? '#ffffff' : '#d8d2c4';
-    ctx.fillRect(x - 7, y - 6, 14, 17);
-    ctx.fillStyle = p.cls.torso;
-    ctx.fillRect(x - 7, y - 6, 14, 6);
-    ctx.fillStyle = p.hurtFlash > 0 ? '#ffffff' : '#f0e6d2';
-    ctx.beginPath(); ctx.arc(x, y - 12, 6.5, 0, Math.PI * 2); ctx.fill();
+    Art.player.draw(ctx, p, x, y, this.time);
 
     // Weapon in hand
     const hx = x + Math.cos(p.aim) * 12, hy = y + Math.sin(p.aim) * 12;
