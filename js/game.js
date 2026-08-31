@@ -1,0 +1,1986 @@
+/* Game shell: loop, camera, renderer, lighting, world interaction, UI. */
+'use strict';
+
+class Audio2 {
+  constructor() { this.ctx = null; this.enabled = true; }
+  resume() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  blip(freq, dur = 0.08, gain = 0.12, type = 'square') {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq * 0.55), t + dur);
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
+
+  /* One second of white noise, generated once. Everything percussive below is
+     this buffer through a moving filter — a swing is a noise sweep, not a
+     square wave, which is why the old sword sounded like a menu beep. */
+  noiseBuffer() {
+    if (this._noise) return this._noise;
+    const len = this.ctx.sampleRate;
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    this._noise = buf;
+    return buf;
+  }
+
+  noise({ dur = 0.18, gain = 0.2, from = 900, to = 200, q = 1.2, type = 'bandpass', delay = 0 }) {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime + delay;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer();
+    src.playbackRate.value = 1;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = type;
+    filter.Q.value = q;
+    filter.frequency.setValueAtTime(from, t);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(60, to), t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + dur * 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(filter).connect(g).connect(this.ctx.destination);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  }
+
+  // Air moving past a blade: a bright band sweeping down, plus low body on
+  // the heavy version so a Cleave lands with weight instead of pitch.
+  swordSwing(heavy) {
+    if (heavy) {
+      this.noise({ dur: 0.34, gain: 0.26, from: 2600, to: 160, q: 0.9 });
+      this.blip(78, 0.26, 0.16, 'sine');
+      this.noise({ dur: 0.12, gain: 0.14, from: 320, to: 90, q: 2.2, delay: 0.05 });
+    } else {
+      this.noise({ dur: 0.16, gain: 0.17, from: 3200, to: 520, q: 1.6 });
+    }
+  }
+
+  // A hit landing — short, dry, and pitched by how hard it was.
+  impact(heavy) {
+    this.noise({ dur: heavy ? 0.2 : 0.1, gain: heavy ? 0.3 : 0.18, from: heavy ? 700 : 1400, to: 70, q: 0.8, type: 'lowpass' });
+    this.blip(heavy ? 90 : 170, heavy ? 0.1 : 0.05, heavy ? 0.16 : 0.1, 'triangle');
+  }
+
+  // Telegraphs are audio cues too — you should be able to hear a red coming
+  // from off-screen and start moving before you see it.
+  telegraph(kind) {
+    if (kind === 'red') {
+      this.blip(150, 0.3, 0.13, 'sawtooth');
+      this.noise({ dur: 0.3, gain: 0.1, from: 260, to: 90, q: 3 });
+    } else {
+      this.blip(520, 0.14, 0.07, 'triangle');
+    }
+  }
+
+  parryOpen() { this.noise({ dur: 0.07, gain: 0.07, from: 2200, to: 1100, q: 3 }); }
+
+  parryHit() {
+    // Bright metallic ring: two detuned partials plus a short noise chink.
+    this.blip(1180, 0.26, 0.14, 'triangle');
+    this.blip(1760, 0.22, 0.09, 'sine');
+    this.noise({ dur: 0.14, gain: 0.16, from: 6000, to: 1800, q: 1.2, type: 'highpass' });
+  }
+
+  dodge() { this.noise({ dur: 0.16, gain: 0.09, from: 1200, to: 300, q: 1 }); }
+
+  // Each element gets its own voice so you can cast without looking down.
+  cast(element, heavy) {
+    const g = heavy ? 0.2 : 0.11;
+    switch (element) {
+      case 'fire':
+        this.noise({ dur: heavy ? 0.4 : 0.2, gain: g, from: 1400, to: 180, q: 0.8 });
+        this.blip(heavy ? 90 : 300, heavy ? 0.3 : 0.12, g, 'sawtooth');
+        break;
+      case 'earth':
+        this.noise({ dur: heavy ? 0.34 : 0.2, gain: g, from: 500, to: 90, q: 1.6, type: 'lowpass' });
+        this.blip(heavy ? 120 : 210, 0.16, g * 0.8, 'square');
+        break;
+      case 'ice':
+        this.blip(heavy ? 420 : 1500, heavy ? 0.26 : 0.1, g, 'sine');
+        this.noise({ dur: heavy ? 0.3 : 0.12, gain: g * 0.9, from: 7000, to: 2000, q: 2, type: 'highpass' });
+        break;
+      case 'air':
+        this.noise({ dur: heavy ? 0.5 : 0.26, gain: g, from: 900, to: 2600, q: 0.6 });
+        break;
+      default:  // bone
+        this.blip(heavy ? 180 : 520, 0.12, g, 'triangle');
+        this.noise({ dur: 0.14, gain: 0.08, from: 1800, to: 500, q: 2 });
+    }
+  }
+
+  summon() {
+    this.blip(180, 0.3, 0.13, 'sawtooth');
+    this.blip(270, 0.26, 0.08, 'triangle');
+    this.noise({ dur: 0.3, gain: 0.09, from: 380, to: 120, q: 2.4 });
+  }
+
+  explode() {
+    this.noise({ dur: 0.42, gain: 0.3, from: 900, to: 60, q: 0.6, type: 'lowpass' });
+    this.blip(70, 0.32, 0.2, 'sine');
+  }
+
+  freeze() {
+    this.blip(1900, 0.4, 0.14, 'sine');
+    this.blip(2600, 0.3, 0.08, 'triangle');
+    this.noise({ dur: 0.35, gain: 0.14, from: 9000, to: 2400, q: 1.4, type: 'highpass' });
+  }
+
+  jarona() {
+    // A little rising yelp before the impact.
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(300, t);
+    osc.frequency.exponentialRampToValueAtTime(900, t + 0.18);
+    g.gain.setValueAtTime(0.14, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t); osc.stop(t + 0.26);
+    this.explode();
+  }
+
+  slingShot(tier, heavy = false) {
+    if (tier > 0) {
+      // Assault rifle: a crack with a tail, not an elastic snap.
+      this.noise({ dur: 0.09, gain: 0.24, from: 5200, to: 700, q: 0.7, type: 'highpass' });
+      this.blip(210, 0.05, 0.12, 'sawtooth');
+      return;
+    }
+    this.noise({ dur: heavy ? 0.16 : 0.07, gain: heavy ? 0.2 : 0.12, from: heavy ? 1800 : 2400, to: 400, q: 2.4 });
+    this.blip(heavy ? 300 : 620, heavy ? 0.1 : 0.04, 0.08, 'triangle');
+  }
+}
+
+class Game {
+  constructor() {
+    this.canvas = document.getElementById('game');
+    this.ctx = this.canvas.getContext('2d');
+    this.light = document.createElement('canvas');
+    this.lctx = this.light.getContext('2d');
+    this.minimap = document.getElementById('minimap');
+    this.mmctx = this.minimap.getContext('2d');
+    this.bigmap = document.getElementById('bigmap');
+    this.bigctx = this.bigmap.getContext('2d');
+
+    this.fx = new FX();
+    this.audio = new Audio2();
+    this.state = 'title';            // title | playing | levelup | paused | map | end
+    // lPressed/rPressed latch a click that begins and ends inside one frame,
+    // so a very fast tap still produces an attack.
+    this.input = {
+      left: 0, right: 0, up: 0, down: 0, dash: false,
+      parry: false, parryPressed: false,
+      mouseL: false, mouseR: false, lPressed: false, rPressed: false,
+    };
+    this.mouse = { x: 0, y: 0 };
+    this.mouseWorld = { x: 0, y: 0 };
+    this.cam = { x: 0, y: 0 };
+    this.time = 0;
+    this.pendingLevelUps = 0;
+    this.perkSource = 'level';
+    this.toastT = 0;
+
+    // Broad-phase indices. Enemies move, so theirs is rebuilt each frame;
+    // props never move, so theirs is built once per map.
+    this.enemyHash = new SpatialHash(96);
+    this.propHash = new SpatialHash(128);
+    this._q = [];
+
+    // Pre-rendered radial glow. The lighting pass used to allocate a fresh
+    // gradient per torch per frame; now it blits this.
+    this.glow = this.makeGlowSprite();
+
+    this.hudCache = {};        // last written HUD values, to avoid DOM churn
+    this.saveTimer = 0;
+    this.mapIndex = 0;
+    this.mapSeeds = [];
+    this.minions = [];
+    this.zones = [];
+    this.impacts = [];
+    this.roulette = { open: false, held: 0, index: 0 };
+
+    this.bindEvents();
+    this.resize();
+  }
+
+  // One 128px radial falloff, drawn once and scaled at use time.
+  makeGlowSprite() {
+    const s = 128;
+    const c = document.createElement('canvas');
+    c.width = c.height = s;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    grad.addColorStop(0, 'rgba(0,0,0,1)');
+    grad.addColorStop(0.55, 'rgba(0,0,0,0.72)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, s, s);
+    return c;
+  }
+
+  /* ---------------- setup ---------------- */
+
+  resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.vw = window.innerWidth;
+    this.vh = window.innerHeight;
+    this.canvas.width = Math.floor(this.vw * dpr);
+    this.canvas.height = Math.floor(this.vh * dpr);
+    this.dpr = dpr;
+    this.light.width = Math.floor(this.vw / 2);
+    this.light.height = Math.floor(this.vh / 2);
+  }
+
+  bindEvents() {
+    window.addEventListener('resize', () => this.resize());
+
+    const keyMap = {
+      KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down',
+      KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right',
+    };
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code in keyMap) { this.input[keyMap[e.code]] = 1; e.preventDefault(); }
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { this.input.dash = true; e.preventDefault(); }
+      if (e.code === 'Space' && !e.repeat) { this.input.parry = true; this.input.parryPressed = true; e.preventDefault(); }
+      if (e.code === 'KeyE') this.interact();
+      if (e.code === 'KeyR' && !e.repeat) this.openRoulette();
+      if (e.code === 'Tab') { e.preventDefault(); this.toggleMap(); }
+      if (e.code === 'Escape') this.togglePause();
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code in keyMap) this.input[keyMap[e.code]] = 0;
+      if (e.code === 'Space') this.input.parry = false;
+      if (e.code === 'KeyR') this.closeRoulette();
+    });
+
+    this.canvas.addEventListener('mousemove', (e) => {
+      const r = this.canvas.getBoundingClientRect();
+      this.mouse.x = e.clientX - r.left;
+      this.mouse.y = e.clientY - r.top;
+    });
+    this.canvas.addEventListener('mousedown', (e) => {
+      this.audio.resume();
+      if (e.button === 0) { this.input.mouseL = true; this.input.lPressed = true; }
+      if (e.button === 2) { this.input.mouseR = true; this.input.rPressed = true; }
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.input.mouseL = false;
+      if (e.button === 2) this.input.mouseR = false;
+    });
+    window.addEventListener('blur', () => {
+      this.input.mouseL = this.input.mouseR = false;
+      this.input.parry = this.input.parryPressed = false;
+      this.input.left = this.input.right = this.input.up = this.input.down = 0;
+    });
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    document.getElementById('quitBtn').onclick = () => location.reload();
+    document.getElementById('againBtn').onclick = () => location.reload();
+  }
+
+  /* ---------------- run lifecycle ---------------- */
+
+  /* A run is: pick a class, then walk two maps. `start` begins a fresh run;
+     `resume` rebuilds one from disk; `loadMap` swaps the world underneath a
+     player who carries across. */
+
+  start(classId, seedText) {
+    this.audio.resume();
+    const base = seedText && seedText.trim()
+      ? U.hashSeed(seedText.trim())
+      : (Math.random() * 0xffffffff) >>> 0;
+    this.seedText = seedText && seedText.trim() ? seedText.trim() : String(base);
+    this.baseSeed = base;
+    this.mapSeeds = MAPS.map(m => (base ^ m.seedSalt) >>> 0);
+    this.runStart = performance.now();
+    this.time = 0;
+    this.player = null;
+    this.pendingClassId = classId;
+
+    Save.clearRun();
+    Save.updateMeta(m => {
+      m.runs++;
+      if (!m.classesPlayed.includes(classId)) m.classesPlayed.push(classId);
+    });
+
+    this.loadMap(0, { fresh: true });
+    this.toast(`${this.player.weaponName} — ${this.player.cls.className}. ${this.player.cls.blurb}`, 4.5);
+  }
+
+  loadMap(index, opts = {}) {
+    this.mapIndex = U.clamp(index, 0, MAPS.length - 1);
+    const def = MAPS[this.mapIndex];
+
+    // Drop the previous world wholesale so two maps never sit in memory at once.
+    this.enemies = [];
+    this.projectiles = [];
+    this.pickups = [];
+    this.minions = [];
+    this.zones = [];
+    this.impacts = [];
+    this.fx.clear();
+    this.dungeon = new Dungeon(this.mapSeeds[this.mapIndex], def);
+    this.exploreCanvas = null;    // rebuilt lazily at the new map's size
+
+    if (opts.fresh) {
+      this.player = new Player(this.pendingClassId, this.dungeon.startX, this.dungeon.startY);
+    } else if (opts.player) {
+      this.player = opts.player;
+    }
+    if (!opts.keepPosition) {
+      this.player.x = this.dungeon.startX;
+      this.player.y = this.dungeon.startY;
+    }
+    this.player.vx = this.player.vy = 0;
+
+    // Each map hands out that map's weapon tier.
+    const promoted = this.player.setWeaponTier(this.mapIndex, opts.fresh ? null : this);
+
+    this.propHash.rebuild(this.dungeon.props);
+    this.cam.x = this.player.x - this.vw / 2;
+    this.cam.y = this.player.y - this.vh / 2;
+    this.bossActive = false;
+    this.bossDefeated = false;
+    this.boss = null;
+    this.gateFound = false;
+    this.currentRoom = null;
+    this.pendingLevelUps = 0;
+    this.hudCache = {};
+    this.state = 'playing';
+
+    for (const id of ['title', 'levelup', 'pause', 'mapscreen', 'endscreen']) {
+      document.getElementById(id).classList.add('hidden');
+    }
+    document.getElementById('hud').classList.remove('hidden');
+    this.refreshClassHud();
+
+    if (!opts.silent) {
+      this.toast(`${def.name} — ${def.subtitle}`, 4.5);
+      if (promoted) setTimeout(() => this.toast(`You take up the ${promoted}.`, 4), 2000);
+    }
+    return def;
+  }
+
+  refreshClassHud() {
+    const c = this.player.cls;
+    document.getElementById('portraitIcon').textContent = c.icon;
+    document.getElementById('portrait').style.borderColor = c.color;
+    document.getElementById('ab1Name').textContent = c.primary.name;
+    document.getElementById('ab2Name').textContent = c.heavy.name;
+    document.getElementById('ab3Name').textContent = c.mobility.name;
+    document.querySelector('.bar.en .fill').style.background = c.energyBar;
+    document.getElementById('manaBar').classList.toggle('hidden', !this.player.usesMana);
+  }
+
+  /* ---------------- persistence ---------------- */
+
+  captureSave() {
+    const d = this.dungeon;
+    const usedProps = [];
+    d.props.forEach((p, i) => { if (p.used) usedProps.push(i); });
+    const cleared = [];
+    d.rooms.forEach((r, i) => { if (r.cleared) cleared.push(i); });
+
+    return {
+      v: 1,
+      savedAt: Date.now(),
+      elapsed: this.time,
+      seedText: this.seedText,
+      baseSeed: this.baseSeed,
+      mapIndex: this.mapIndex,
+      player: this.player.serialize(),
+      world: {
+        usedProps,
+        cleared,
+        bossDefeated: this.bossDefeated,
+        explored: Save.encodeExplored(d.explored),
+      },
+    };
+  }
+
+  saveNow() {
+    if (this.state === 'end' || !this.player || this.player.dead) return;
+    Save.writeRun(this.captureSave());
+  }
+
+  resume(data) {
+    this.audio.resume();
+    this.seedText = data.seedText;
+    this.baseSeed = data.baseSeed >>> 0;
+    this.mapSeeds = MAPS.map(m => (this.baseSeed ^ m.seedSalt) >>> 0);
+    this.time = data.elapsed || 0;
+    this.runStart = performance.now() - this.time * 1000;
+
+    const player = Player.restore(data.player);
+    this.loadMap(data.mapIndex || 0, { player, keepPosition: true, silent: true });
+
+    // Re-apply the deltas on top of the regenerated world.
+    const w = data.world || {};
+    for (const i of w.usedProps || []) if (this.dungeon.props[i]) this.dungeon.props[i].used = true;
+    for (const i of w.cleared || []) {
+      const room = this.dungeon.rooms[i];
+      if (room) { room.cleared = true; room.spawned = true; }   // stays empty
+    }
+    this.bossDefeated = !!w.bossDefeated;
+    if (w.explored) {
+      this.dungeon.explored = Save.decodeExplored(w.explored, this.dungeon.w * this.dungeon.h);
+      this.exploreCanvas = null;   // force a full repaint of the cached minimap
+    }
+
+    // Consumed on load: you may suspend a run, but you may not rewind a death.
+    Save.clearRun();
+
+    const def = MAPS[this.mapIndex];
+    this.toast(`${def.name} — ${def.subtitle}. Your run continues.`, 4.5);
+  }
+
+  toast(msg, dur = 3) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+    el.style.animation = 'none';
+    void el.offsetWidth;
+    el.style.animation = '';
+    this.toastT = dur;
+  }
+
+  /* Reading an attack correctly should feel loud. A parry refunds energy,
+     opens the attacker, and stops the hit dead. */
+  onParry(p, opts) {
+    p.parryT = 0;
+    p.parryCd = PARRY.cdSuccess;
+    p.parryFlash = 0.4;
+    p.parries++;
+    p.energy = Math.min(p.maxEnergy, p.energy + PARRY.refund);
+    p.iframes = Math.max(p.iframes, 0.16);   // brief grace so packs can't chain you
+
+    const a = opts.x !== undefined ? U.angle(p.x, p.y, opts.x, opts.y) : p.aim;
+    this.fx.ring(p.x + Math.cos(a) * 18, p.y + Math.sin(a) * 18, 26, '#8fd4ff', 26);
+    this.fx.spark(p.x + Math.cos(a) * 22, p.y + Math.sin(a) * 22, {
+      count: 20, color: ['#ffffff', '#8fd4ff', '#cfe4ff'], dir: a, spread: 1.2,
+      speedMax: 320, lifeMax: 0.5, sizeMax: 4,
+    });
+    this.fx.text(p.x, p.y - 44, 'PARRY', '#8fd4ff', 20);
+    this.fx.addShake(6);
+    this.fx.addFlash('#8fd4ff', 0.16);
+    this.audio.parryHit();
+
+    if (opts.source && !opts.source.dead && !opts.projectile) opts.source.onParried(this);
+  }
+
+  onDodge(p, opts) {
+    this.fx.text(p.x, p.y - 40, 'DODGE', '#d8d2c4', 14);
+    this.fx.spark(p.x, p.y, {
+      count: 6, color: ['#d8d2c4'], speedMax: 130, lifeMax: 0.3, sizeMax: 2.5, glow: false,
+    });
+    this.audio.dodge();
+    void opts;
+  }
+
+  onPlayerDeath() {
+    this.fx.addShake(20);
+    this.fx.addFlash('#c8452f', 0.9);
+    setTimeout(() => this.endRun(false), 900);
+  }
+
+  onBossDefeated() {
+    const def = MAPS[this.mapIndex];
+    this.bossActive = false;
+    this.bossDefeated = true;
+    this.dungeon.sealed = false;
+    this.boss = null;
+    Save.updateMeta(m => {
+      if (!m.bossesFelled.includes(def.bossType)) m.bossesFelled.push(def.bossType);
+    });
+
+    const isLast = this.mapIndex >= MAPS.length - 1;
+    this.toast(isLast
+      ? `${def.bossName} falls. The deep is yours.`
+      : `${def.bossName} falls. A way down opens.`, 6);
+
+    setTimeout(() => {
+      if (this.state !== 'playing') return;
+      if (isLast) this.endRun(true);
+      else this.descend();
+    }, 2800);
+  }
+
+  descend() {
+    const player = this.player;
+    player.heal(Math.round(player.maxHp * 0.5));
+    player.energy = player.maxEnergy;
+    // Generate the next map while the boss death still fills the screen.
+    this.loadMap(this.mapIndex + 1, { player });
+    this.fx.addFlash('#ffffff', 0.7);
+    this.saveNow();
+  }
+
+  endRun(won) {
+    this.state = 'end';
+    const p = this.player;
+    const mins = Math.floor(this.time / 60), secs = Math.floor(this.time % 60);
+
+    // A run is over: the resume save dies with it, but the meta record keeps.
+    Save.clearRun();
+    Save.updateMeta(m => {
+      if (won) {
+        m.wins++;
+        if (m.bestTime === null || this.time < m.bestTime) m.bestTime = this.time;
+      } else m.deaths++;
+    });
+
+    document.getElementById('endTitle').textContent = won ? 'The Deep Is Yours' : 'You Died';
+    document.getElementById('endSub').textContent = won
+      ? `You went down with a ${p.cls.tiers[0].weapon.toLowerCase()} and walked out of Sarapolis.`
+      : `${MAPS[this.mapIndex].name} keeps you. The ${p.weaponName.toLowerCase()} was not enough.`;
+    document.getElementById('endStats').innerHTML = [
+      ['Class', `${p.cls.className} (${p.weaponName})`],
+      ['Reached', MAPS[this.mapIndex].name],
+      ['Level', `${p.level}`],
+      ['Enemies slain', `${p.kills}`],
+      ['Gold gathered', `${p.gold}`],
+      ['Weapon rank', U.roman(p.weaponLevel)],
+      ['Boons taken', `${p.perksTaken.length}`],
+      ['Time', `${mins}m ${String(secs).padStart(2, '0')}s`],
+      ['World seed', this.seedText],
+    ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+    document.getElementById('endscreen').classList.remove('hidden');
+  }
+
+  /* ---------------- pause / map / level up ---------------- */
+
+  togglePause() {
+    if (this.state === 'playing') {
+      this.state = 'paused';
+      const p = this.player;
+      document.getElementById('pauseStats').innerHTML = [
+        ['Class', `${p.cls.className} — ${p.cls.weapon}`],
+        ['Level', `${p.level}`],
+        ['Health', `${Math.ceil(p.hp)} / ${p.maxHp}`],
+        ['Damage', `${Math.round(p.power * 100)}%`],
+        ['Weapon rank', U.roman(p.weaponLevel)],
+        ['Kills', `${p.kills}`],
+        ['Gold', `${p.gold}`],
+        ['Boons', p.perksTaken.length ? p.perksTaken.map(id => PERKS.find(x => x.id === id).name).join(', ') : '—'],
+        ['Seed', this.seedText],
+      ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+      document.getElementById('pause').classList.remove('hidden');
+    } else if (this.state === 'paused') {
+      this.state = 'playing';
+      document.getElementById('pause').classList.add('hidden');
+    }
+  }
+
+  toggleMap() {
+    if (this.state === 'playing') {
+      this.state = 'map';
+      this.drawBigMap();
+      document.getElementById('mapscreen').classList.remove('hidden');
+    } else if (this.state === 'map') {
+      this.state = 'playing';
+      document.getElementById('mapscreen').classList.add('hidden');
+    }
+  }
+
+  queueLevelUp() {
+    this.pendingLevelUps++;
+    this.fx.ring(this.player.x, this.player.y, 30, '#ffd479', 26);
+    this.fx.text(this.player.x, this.player.y - 40, 'LEVEL UP', '#ffd479', 20);
+    this.audio.blip(880, 0.2, 0.14, 'triangle');
+  }
+
+  openPerkChoice(source = 'level') {
+    this.perkSource = source;
+    this.state = 'levelup';
+    const p = this.player;
+    document.getElementById('luTitle').textContent =
+      source === 'shrine' ? 'Forgotten Shrine' : `Level ${p.level}`;
+    document.querySelector('#levelup .sub').textContent =
+      source === 'shrine' ? 'The stone offers a gift.' : 'Choose a boon.';
+
+    const list = document.getElementById('perkList');
+    list.innerHTML = '';
+    for (const perk of rollPerks(p.classId, p.perksTaken)) {
+      const btn = document.createElement('button');
+      btn.className = 'perk';
+      btn.innerHTML = `<div class="icon">${perk.icon}</div><h3>${perk.name}</h3><p>${perk.desc}</p>`;
+      btn.onclick = () => this.takePerk(perk);
+      list.appendChild(btn);
+    }
+    document.getElementById('levelup').classList.remove('hidden');
+  }
+
+  takePerk(perk) {
+    perk.apply(this.player);
+    this.player.perksTaken.push(perk.id);
+    document.getElementById('levelup').classList.add('hidden');
+    this.state = 'playing';
+    this.fx.ring(this.player.x, this.player.y, 34, this.player.cls.color, 22);
+    this.audio.blip(1200, 0.18, 0.1, 'triangle');
+    this.toast(`${perk.name} — ${perk.desc}`, 3.2);
+  }
+
+  /* ---------------- loadout roulette (R) ----------------
+     Tap R to cycle to the next slot; hold it to open the wheel, point, and
+     release to pick. Holding also slows time, so switching mid-fight is a
+     decision rather than a scramble. */
+
+  openRoulette() {
+    if (this.state !== 'playing' || !this.player || !this.player.loadout) return;
+    this.roulette.open = true;
+    this.roulette.held = 0;
+    this.roulette.index = this.player.slot;
+  }
+
+  closeRoulette() {
+    const r = this.roulette;
+    if (!r.open) return;
+    r.open = false;
+    const p = this.player;
+    if (!p || !p.loadout) return;
+    // A quick tap is a cycle; a deliberate hold commits to what you pointed at.
+    const picked = r.held < 0.2 ? p.cycleSlot(1) : p.setSlot(r.index);
+    this.hudCache.slot = null;
+    this.fx.text(p.x, p.y - 46, picked.name, picked.color, 17);
+    this.fx.ring(p.x, p.y, 26, picked.color, 18);
+    this.audio.blip(760, 0.09, 0.08, 'triangle');
+  }
+
+  updateRoulette(dt) {
+    const r = this.roulette;
+    if (!r.open) return;
+    r.held += dt;
+    const opts = this.player.loadout.options;
+    // Point away from the centre to choose; stay near it to keep your pick.
+    const dx = this.mouse.x - this.vw / 2, dy = this.mouse.y - this.vh / 2;
+    if (Math.hypot(dx, dy) > 45) {
+      const a = Math.atan2(dy, dx) + Math.PI / 2 + Math.PI * 2;
+      r.index = Math.floor((a % (Math.PI * 2)) / (Math.PI * 2) * opts.length) % opts.length;
+    }
+  }
+
+  drawRoulette(ctx) {
+    const r = this.roulette;
+    if (!r.open || !this.player.loadout) return;
+    const opts = this.player.loadout.options;
+    const cx = this.vw / 2, cy = this.vh / 2;
+    const inner = 58, outer = 132;
+    const seg = (Math.PI * 2) / opts.length;
+
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(0, 0, this.vw, this.vh);
+    ctx.globalAlpha = 1;
+
+    for (let i = 0; i < opts.length; i++) {
+      const o = opts[i];
+      const a0 = -Math.PI / 2 + i * seg, a1 = a0 + seg;
+      const on = i === r.index;
+      ctx.beginPath();
+      ctx.arc(cx, cy, on ? outer + 10 : outer, a0 + 0.03, a1 - 0.03);
+      ctx.arc(cx, cy, inner, a1 - 0.03, a0 + 0.03, true);
+      ctx.closePath();
+      ctx.fillStyle = on ? o.color : 'rgba(22,20,28,.88)';
+      ctx.globalAlpha = on ? 0.28 : 0.85;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = on ? o.color : 'rgba(255,255,255,.14)';
+      ctx.lineWidth = on ? 2.5 : 1;
+      ctx.stroke();
+
+      const mid = a0 + seg / 2;
+      const lx = cx + Math.cos(mid) * (inner + outer) / 2;
+      const ly = cy + Math.sin(mid) * (inner + outer) / 2;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = on ? '#fff' : 'rgba(232,226,212,.7)';
+      ctx.font = '20px system-ui';
+      ctx.fillText(o.icon, lx, ly - 4);
+      ctx.font = `${on ? '700 ' : ''}11px system-ui`;
+      ctx.fillText(o.name, lx, ly + 15);
+    }
+
+    const cur = opts[r.index];
+    ctx.textAlign = 'center';
+    ctx.fillStyle = cur.color;
+    ctx.font = '600 15px system-ui';
+    ctx.fillText(cur.name, cx, cy - 4);
+    ctx.fillStyle = 'rgba(232,226,212,.72)';
+    ctx.font = '11px system-ui';
+    ctx.fillText(this.player.loadout.label, cx, cy + 13);
+
+    ctx.fillStyle = 'rgba(232,226,212,.5)';
+    ctx.font = '11px system-ui';
+    ctx.fillText(cur.desc, cx, cy + outer + 40);
+    ctx.fillText('point and release  ·  tap R to cycle', cx, cy + outer + 58);
+    ctx.restore();
+  }
+
+  /* ---------------- world interaction ---------------- */
+
+  nearbyProp() {
+    return this.propHash.nearest(this.player.x, this.player.y, 72, p => !p.used);
+  }
+
+  interact() {
+    if (this.state !== 'playing') return;
+    const prop = this.nearbyProp();
+    if (!prop) return;
+    const p = this.player;
+
+    if (prop.type === 'chest') {
+      prop.used = true;
+      const base = prop.rich ? U.randi(60, 110) : U.randi(18, 46);
+      const gold = Math.round(base * (1 + p.level * 0.08) * p.goldMul);
+      p.gold += gold;
+      this.fx.text(prop.x, prop.y - 24, `+${gold} gold`, '#e2b34a', 17);
+      this.fx.spark(prop.x, prop.y, { count: 26, color: ['#e2b34a', '#fff1c9'], speedMax: 220, gravity: 300, lifeMax: 0.9 });
+      if (prop.rich || U.chance(0.4)) this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
+      if (U.chance(0.5)) this.pickups.push(new Pickup('heart', prop.x, prop.y, 22));
+      this.audio.blip(700, 0.2, 0.12, 'triangle');
+
+    } else if (prop.type === 'fountain') {
+      prop.used = true;
+      const healed = p.heal(Math.round(p.maxHp * 0.45));
+      p.energy = p.maxEnergy;
+      this.fx.text(prop.x, prop.y - 24, `+${healed}`, '#6fbf73', 18);
+      this.fx.ring(prop.x, prop.y, 28, '#6fbf73', 22);
+      this.audio.blip(520, 0.3, 0.1, 'sine');
+
+    } else if (prop.type === 'shrine') {
+      prop.used = true;
+      this.openPerkChoice('shrine');
+
+    } else if (prop.type === 'redshrine') {
+      this.wakeRedShrine(prop);
+
+    } else if (prop.type === 'gate') {
+      if (this.bossDefeated) return;
+      // The gate stays bound until every red shrine is out.
+      const down = this.shrinesDown, total = this.dungeon.redShrineCount;
+      if (down < total) {
+        this.toast(`The gate is bound. ${total - down} red shrine${total - down === 1 ? '' : 's'} still burn.`, 3.5);
+        this.fx.addShake(3);
+        this.audio.blip(110, 0.25, 0.12, 'sawtooth');
+        return;
+      }
+      prop.used = true;
+      this.startBossFight(prop.room);
+    }
+  }
+
+  get shrinesDown() {
+    if (!this.dungeon) return 0;
+    return this.dungeon.props.filter(p => p.type === 'redshrine' && p.used).length;
+  }
+
+  /* Deactivating a shrine is a fight, not a fetch: it calls guardians, and
+     only goes dark when the last of them is down. */
+  wakeRedShrine(prop) {
+    if (prop.used || prop.active) return;
+    prop.active = true;
+    prop.wave = [];
+
+    const threat = prop.room.threat;
+    const table = MAPS[this.mapIndex].tables[U.clamp(prop.room.tier, 0, 5)];
+    const count = 4 + Math.min(3, Math.floor(threat / 2));
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + U.rand(-0.3, 0.3);
+      const r = U.rand(90, 170);
+      const e = this.spawnEnemy(U.pick(table), prop.x + Math.cos(a) * r, prop.y + Math.sin(a) * r,
+        threat, i === count - 1);
+      e.aggro = true;
+      e.guardian = prop;   // marks it on screen and on the minimap
+      prop.wave.push(e);
+    }
+    prop.waveTotal = prop.wave.length;
+
+    this.fx.ring(prop.x, prop.y, 60, '#ff3b1f', 40);
+    this.fx.addShake(9);
+    this.fx.addFlash('#c8452f', 0.35);
+    this.toast('The shrine calls its guardians. Put them down.', 4);
+    this.audio.blip(90, 0.6, 0.18, 'sawtooth');
+  }
+
+  updateRedShrines() {
+    this.activeShrine = null;
+    for (const prop of this.dungeon.props) {
+      if (prop.type !== 'redshrine' || !prop.active || prop.used) continue;
+
+      prop.remaining = prop.wave.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
+      if (prop.remaining > 0) { this.activeShrine = prop; continue; }
+
+      prop.active = false;
+      prop.used = true;
+      const down = this.shrinesDown, total = this.dungeon.redShrineCount;
+      this.fx.ring(prop.x, prop.y, 70, '#ff3b1f', 46);
+      this.fx.spark(prop.x, prop.y, {
+        count: 40, color: ['#ff5a3c', '#ffd479', '#ffffff'], speedMax: 320, lifeMax: 0.9, sizeMax: 5,
+      });
+      this.fx.addShake(10);
+      this.audio.freeze();
+      this.hudCache.shrines = null;
+
+      if (down >= total) {
+        this.toast('The last shrine dies. The gate opens.', 6);
+        this.fx.addFlash('#ffffff', 0.5);
+      } else {
+        this.toast(`Shrine extinguished — ${down} of ${total}.`, 3.5);
+      }
+      this.pickups.push(new Pickup('heart', prop.x, prop.y, 25));
+      this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
+    }
+  }
+
+  startBossFight(room) {
+    const def = MAPS[this.mapIndex];
+    this.bossActive = true;
+    this.dungeon.sealed = true;
+    this.boss = this.spawnEnemy(def.bossType, room.wx, room.wy - 40, room.threat, false);
+    // Boss health is set per map rather than inherited from tier scaling, so
+    // it stays tuned as maps are added or reordered.
+    if (def.bossHp) { this.boss.maxHp = def.bossHp; this.boss.hp = def.bossHp; }
+    this.boss.aggro = true;
+    this.fx.addShake(18);
+    this.fx.addFlash('#c8452f', 0.6);
+    this.toast(`The gate seals. ${def.bossName} wakes.`, 4);
+    this.audio.blip(70, 0.7, 0.2, 'sawtooth');
+  }
+
+  spawnEnemy(type, x, y, threat, elite, room = null) {
+    const e = new Enemy(type, x, y, threat, elite);
+    e.room = room;
+    if (room) room.alive = (room.alive || 0) + 1;
+    this.enemies.push(e);
+    return e;
+  }
+
+  collect(pk) {
+    const p = this.player;
+    if (pk.type === 'gold') {
+      const g = Math.max(1, Math.round(pk.value * p.goldMul));
+      p.gold += g;
+      this.audio.blip(940, 0.04, 0.05, 'triangle');
+    } else if (pk.type === 'heart') {
+      const h = p.heal(pk.value);
+      if (h > 0) this.fx.text(p.x, p.y - 30, `+${h}`, '#6fbf73', 15);
+      this.audio.blip(660, 0.12, 0.09, 'sine');
+    } else if (pk.type === 'energy') {
+      p.energy = Math.min(p.maxEnergy, p.energy + pk.value);
+    } else if (pk.type === 'shard') {
+      p.weaponLevel++;
+      this.fx.text(p.x, p.y - 34, `${p.weaponName} ${U.roman(p.weaponLevel)}`, '#b58ad6', 17);
+      this.fx.ring(p.x, p.y, 26, '#b58ad6', 20);
+      this.audio.blip(1320, 0.22, 0.1, 'triangle');
+    }
+  }
+
+  /* ---------------- update ---------------- */
+
+  update(dt) {
+    if (this.state !== 'playing') { this.fx.update(dt); return; }
+    this.updateRoulette(dt);
+    // Holding the wheel open slows the world rather than freezing it.
+    if (this.roulette.open) dt *= 0.25;
+    this.time += dt;
+
+    // Screen -> world for aiming.
+    this.mouseWorld.x = this.mouse.x + this.cam.x;
+    this.mouseWorld.y = this.mouse.y + this.cam.y;
+
+    this.player.update(dt, this);
+
+    // Lazily wake rooms as the player approaches them. Cleared rooms stay
+    // cleared, including across a save and resume.
+    for (const room of this.dungeon.rooms) {
+      if (room.spawned || room.cleared || room.kind === 'boss') continue;
+      if (U.dist(this.player.x, this.player.y, room.wx, room.wy) < 820) {
+        room.spawned = true;
+        room.alive = 0;
+        for (const s of room.spawns) this.spawnEnemy(s.type, s.x, s.y, s.threat, s.elite, room);
+        if (room.alive === 0) room.cleared = true;
+      }
+    }
+
+    // Broad phase for this frame: every "what is near me" query below reads it.
+    this.enemyHash.rebuild(this.enemies);
+
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      if (e.dead) { this.enemies.splice(i, 1); continue; }
+      // Far-away enemies idle to keep the frame budget for what's on screen.
+      if (U.dist2(e.x, e.y, this.player.x, this.player.y) > 1500 * 1500) continue;
+      e.update(dt, this);
+    }
+
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const pr = this.projectiles[i];
+      pr.update(dt, this);
+      if (pr.dead) this.projectiles.splice(i, 1);
+    }
+
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const pk = this.pickups[i];
+      pk.update(dt, this);
+      if (pk.dead) this.pickups.splice(i, 1);
+    }
+
+    for (let i = this.minions.length - 1; i >= 0; i--) {
+      const m = this.minions[i];
+      m.update(dt, this);
+      if (m.dead) this.minions.splice(i, 1);
+    }
+
+    for (let i = this.zones.length - 1; i >= 0; i--) {
+      const z = this.zones[i];
+      z.update(dt, this);
+      if (z.dead) this.zones.splice(i, 1);
+    }
+
+    /* Delayed ground impacts: a marked circle, a beat of warning, then the
+       blast. Mage meteors and enemy mortar shells are the same object — the
+       only difference is which side it hurts. Enemy impacts are always
+       unblockable, so the marker is the whole counterplay. */
+    for (let i = this.impacts.length - 1; i >= 0; i--) {
+      const m = this.impacts[i];
+      m.t += dt;
+      if (m.t < m.delay) continue;
+      this.impacts.splice(i, 1);
+
+      this.fx.ring(m.x, m.y, m.radius * 0.7, m.color, 40);
+      this.fx.spark(m.x, m.y, {
+        count: 34, color: [m.color, '#ffd479', '#ffffff'], speedMax: 420, lifeMax: 0.8, sizeMax: 6,
+      });
+      this.fx.addShake(11);
+      this.audio.explode();
+
+      if (m.hostile) {
+        if (U.dist(m.x, m.y, this.player.x, this.player.y) < m.radius) {
+          this.player.takeHit(m.aoeDamage, this, { x: m.x, y: m.y, kind: 'red', source: m.source });
+        }
+        continue;
+      }
+
+      const direct = m.directRadius ? this.enemyHash.nearest(m.x, m.y, m.directRadius, e => !e.dead) : null;
+      if (direct) direct.takeDamage(m.directDamage, this, m.x, m.y, 260, false);
+      for (const e of this.enemyHash.query(m.x, m.y, m.radius, this._q)) {
+        if (e.dead || e === direct || U.dist(m.x, m.y, e.x, e.y) > m.radius) continue;
+        e.takeDamage(m.aoeDamage, this, m.x, m.y, 200, false);
+      }
+    }
+
+    this.updateRedShrines();
+    this.fx.update(dt);
+    this.dungeon.markExplored(this.player.x, this.player.y, 9);
+
+    const room = this.dungeon.roomOf(this.player.x, this.player.y);
+    if (room) {
+      room.explored = true;
+      this.currentRoom = room;
+      if (room.kind === 'boss' && !this.gateFound) {
+        this.gateFound = true;
+        if (!this.bossDefeated) this.toast(MAPS[this.mapIndex].gateLine, 5);
+      }
+    }
+
+    // Autosave. The periodic write is the real safety net; a browser close or
+    // a power cut never guarantees `beforeunload` fires.
+    this.saveTimer -= dt;
+    if (this.saveTimer <= 0) { this.saveTimer = 5; this.saveNow(); }
+
+    // Camera trails the player, biased slightly toward the cursor.
+    const tx = this.player.x + (this.mouseWorld.x - this.player.x) * 0.12 - this.vw / 2;
+    const ty = this.player.y + (this.mouseWorld.y - this.player.y) * 0.12 - this.vh / 2;
+    this.cam.x = U.damp(this.cam.x, tx, 0.16, dt);
+    this.cam.y = U.damp(this.cam.y, ty, 0.16, dt);
+    const worldW = this.dungeon.w * TILE, worldH = this.dungeon.h * TILE;
+    this.cam.x = U.clamp(this.cam.x, 0, Math.max(0, worldW - this.vw));
+    this.cam.y = U.clamp(this.cam.y, 0, Math.max(0, worldH - this.vh));
+
+    if (this.pendingLevelUps > 0 && this.state === 'playing') {
+      this.pendingLevelUps--;
+      this.openPerkChoice('level');
+    }
+
+    if (this.toastT > 0) {
+      this.toastT -= dt;
+      if (this.toastT <= 0) document.getElementById('toast').classList.add('hidden');
+    }
+
+    this.updateHud();
+  }
+
+  /* Every write here forces a style recalc, and this runs 60 times a second,
+     so nothing is written unless it actually changed. */
+  updateHud() {
+    const p = this.player;
+    const cache = this.hudCache;
+
+    const bar = (id, frac) => {
+      const v = Math.round(U.clamp(frac, 0, 1) * 200) / 200;   // 0.5% resolution
+      if (cache[id] === v) return;
+      cache[id] = v;
+      document.getElementById(id).style.transform = `scaleX(${v})`;
+    };
+    const text = (id, value) => {
+      if (cache[id] === value) return;
+      cache[id] = value;
+      document.getElementById(id).textContent = value;
+    };
+    const flag = (id, cls, on) => {
+      const k = id + '.' + cls;
+      if (cache[k] === on) return;
+      cache[k] = on;
+      document.getElementById(id).classList.toggle(cls, on);
+    };
+
+    bar('hpFill', p.hp / p.maxHp);
+    bar('enFill', p.energy / p.maxEnergy);
+    bar('xpFill', p.xp / p.xpNext);
+    if (p.usesMana) bar('manaFill', p.mana / p.maxMana);
+
+    text('hpText', `${Math.ceil(p.hp)} / ${p.maxHp}`);
+    text('enText', `${p.cls.energyName}  ${Math.floor(p.energy)}`);
+    if (p.usesMana) text('manaText', `Mana  ${Math.floor(p.mana)}`);
+    text('xpText', `LV ${p.level} · ${p.weaponName.toUpperCase()} ${U.roman(p.weaponLevel)}`);
+    text('goldText', String(p.gold));
+    text('killText', String(p.kills));
+    text('mapText', MAPS[this.mapIndex].name);
+    text('shrineText', `${this.shrinesDown}/${this.dungeon.redShrineCount}`);
+    flag('shrineChip', 'done', this.shrinesDown >= this.dungeon.redShrineCount);
+    text('regionText', this.currentRoom
+      ? (this.currentRoom.kind === 'boss' ? MAPS[this.mapIndex].bossName : this.dungeon.regionName(this.currentRoom.tier))
+      : '…');
+
+    const heavyCost = p.cls.heavy.cost * p.costMul * 0.35;
+    const mobCost = p.cls.mobility.cost * p.mobCostMul;
+    flag('ab2', 'spent', p.energy < heavyCost);
+    flag('ab3', 'spent', p.energy < mobCost || p.mobCd > 0);
+    flag('ab3', 'ready', p.energy >= mobCost && p.mobCd <= 0);
+    flag('ab5', 'spent', p.parryCd > 0);
+    flag('ab5', 'ready', p.parryCd <= 0);
+
+    // Casters get the wheel readout; everyone else never sees it.
+    const slotEl = document.getElementById('ab6');
+    if (p.loadout) {
+      const s = p.slotDef;
+      const cd = p.minionCds[s.id] || 0;
+      const key = s.id + (cd > 0 ? '|' + Math.ceil(cd) : '');
+      if (cache.slot !== key) {
+        cache.slot = key;
+        slotEl.classList.remove('hidden');
+        document.getElementById('slotName').textContent =
+          cd > 0 ? `${s.name} ${cd.toFixed(1)}s` : s.name;
+        document.getElementById('slotIcon').textContent = s.icon;
+        slotEl.style.borderColor = cd > 0 ? 'rgba(255,255,255,.1)' : s.color;
+        slotEl.classList.toggle('spent', cd > 0);
+      }
+    } else if (cache.slot !== 'none') {
+      cache.slot = 'none';
+      slotEl.classList.add('hidden');
+    }
+
+    const prop = this.state === 'playing' ? this.nearbyProp() : null;
+    const promptEl = document.getElementById('prompt');
+    const key = prop ? prop.type + (prop.rich ? '+' : '') + this.shrinesDown : '';
+    if (cache.prompt !== key) {
+      cache.prompt = key;
+      if (prop) {
+        const labels = {
+          chest: prop.rich ? 'open the <b>warded chest</b>' : 'open the <b>chest</b>',
+          fountain: 'drink from the <b>fountain</b>',
+          shrine: 'touch the <b>shrine</b>',
+          redshrine: 'break the <b>red shrine</b>',
+          gate: this.shrinesDown >= this.dungeon.redShrineCount
+            ? 'open the <b>gate</b>'
+            : `the gate is <b>bound</b> — ${this.shrinesDown}/${this.dungeon.redShrineCount} shrines`,
+        };
+        promptEl.innerHTML = `<b>E</b> — ${labels[prop.type]}`;
+        promptEl.classList.remove('hidden');
+      } else {
+        promptEl.classList.add('hidden');
+      }
+    }
+  }
+
+  /* ---------------- render ---------------- */
+
+  render() {
+    const ctx = this.ctx;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.vw, this.vh);
+    ctx.fillStyle = '#08080b';
+    ctx.fillRect(0, 0, this.vw, this.vh);
+    if (!this.dungeon) return;
+
+    ctx.save();
+    ctx.translate(-Math.round(this.cam.x) + this.fx.shakeX, -Math.round(this.cam.y) + this.fx.shakeY);
+
+    this.drawTiles(ctx);
+    for (const z of this.zones) z.draw(ctx, this.time);   // under everything
+    this.drawProps(ctx);
+    for (const pk of this.pickups) pk.draw(ctx);
+    this.drawImpactMarkers(ctx);
+    this.drawEnemies(ctx);
+    for (const m of this.minions) m.draw(ctx);
+    this.drawPlayer(ctx);
+    for (const pr of this.projectiles) pr.draw(ctx);
+    this.fx.drawParticles(ctx);
+    this.drawReticle(ctx);
+    this.fx.drawTexts(ctx);
+
+    ctx.restore();
+
+    this.drawLighting();
+    this.drawOverlays(ctx);
+    this.drawMinimap();
+  }
+
+  drawTiles(ctx) {
+    const d = this.dungeon;
+    const x0 = Math.max(0, Math.floor(this.cam.x / TILE) - 1);
+    const y0 = Math.max(0, Math.floor(this.cam.y / TILE) - 1);
+    const x1 = Math.min(d.w - 1, Math.ceil((this.cam.x + this.vw) / TILE) + 1);
+    const y1 = Math.min(d.h - 1, Math.ceil((this.cam.y + this.vh) / TILE) + 1);
+
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        const t = d.at(tx, ty);
+        const px = tx * TILE, py = ty * TILE;
+        const pal = d.palette(d.tierAt(tx, ty));
+        const n = U.tileNoise(tx, ty);
+
+        if (t === T.WALL) {
+          const belowOpen = !SOLID[d.at(tx, ty + 1)] && d.at(tx, ty + 1) !== undefined;
+          ctx.fillStyle = pal.wall;
+          ctx.fillRect(px, py, TILE, TILE);
+          if (n > 0.82) {
+            ctx.fillStyle = 'rgba(255,255,255,.03)';
+            ctx.fillRect(px, py, TILE, TILE);
+          }
+          if (belowOpen) {
+            // Lit face: reads as a wall you're looking at, not a hole.
+            ctx.fillStyle = pal.accent;
+            ctx.fillRect(px, py + TILE * 0.62, TILE, TILE * 0.38);
+            ctx.fillStyle = 'rgba(255,255,255,.10)';
+            ctx.fillRect(px, py + TILE * 0.62, TILE, 2);
+            ctx.fillStyle = 'rgba(0,0,0,.30)';
+            ctx.fillRect(px, py + TILE - 3, TILE, 3);
+          }
+          continue;
+        }
+
+        // Floor variants
+        let base = pal.floor;
+        if (t === T.WATER) base = '#1d3a4a';
+        ctx.fillStyle = base;
+        ctx.fillRect(px, py, TILE, TILE);
+
+        if (t === T.WATER) {
+          const shimmer = Math.sin(this.time * 1.6 + tx * 0.7 + ty * 0.5) * 0.5 + 0.5;
+          ctx.fillStyle = `rgba(120,190,220,${0.05 + shimmer * 0.07})`;
+          ctx.fillRect(px, py, TILE, TILE);
+        } else {
+          ctx.fillStyle = n > 0.5 ? 'rgba(255,255,255,.022)' : 'rgba(0,0,0,.09)';
+          ctx.fillRect(px, py, TILE, TILE);
+          if (n > 0.94) {
+            ctx.fillStyle = 'rgba(0,0,0,.16)';
+            ctx.fillRect(px + 6, py + 8, TILE - 14, 3);
+          }
+        }
+
+        // Contact shadow cast by the wall above — the main depth cue.
+        // Three flat bands instead of a gradient: this runs on ~1,800 tiles a
+        // frame, and allocating a CanvasGradient per tile was the single
+        // hottest line in the renderer.
+        if (SOLID[d.at(tx, ty - 1)]) {
+          ctx.fillStyle = 'rgba(0,0,0,.34)';
+          ctx.fillRect(px, py, TILE, 3);
+          ctx.fillStyle = 'rgba(0,0,0,.20)';
+          ctx.fillRect(px, py + 3, TILE, 3);
+          ctx.fillStyle = 'rgba(0,0,0,.09)';
+          ctx.fillRect(px, py + 6, TILE, 3);
+        }
+
+        if (t === T.RUBBLE) {
+          ctx.fillStyle = 'rgba(0,0,0,.28)';
+          const s = 5 + n * 5;
+          ctx.fillRect(px + 6, py + 9, s, s * 0.7);
+          ctx.fillRect(px + TILE - 13, py + TILE - 15, s * 0.7, s * 0.6);
+        }
+
+        if (t === T.PILLAR) {
+          ctx.fillStyle = pal.wall;
+          ctx.fillRect(px + 2, py + 2, TILE - 4, TILE - 4);
+          ctx.fillStyle = pal.accent;
+          ctx.fillRect(px + 2, py + TILE * 0.6, TILE - 4, TILE * 0.4 - 2);
+          ctx.fillStyle = 'rgba(255,255,255,.09)';
+          ctx.fillRect(px + 2, py + TILE * 0.6, TILE - 4, 2);
+        }
+
+        // Tile grid seam, very subtle
+        ctx.fillStyle = 'rgba(0,0,0,.10)';
+        ctx.fillRect(px, py, TILE, 1);
+        ctx.fillRect(px, py, 1, TILE);
+      }
+    }
+
+    // Boss barrier
+    if (this.dungeon.sealed) {
+      const pulse = 0.35 + Math.sin(this.time * 5) * 0.15;
+      for (const s of this.dungeon.sealTiles) {
+        const px = s.tx * TILE, py = s.ty * TILE;
+        if (px < this.cam.x - TILE || px > this.cam.x + this.vw || py < this.cam.y - TILE || py > this.cam.y + this.vh) continue;
+        ctx.fillStyle = `rgba(200,69,47,${pulse})`;
+        ctx.fillRect(px, py, TILE, TILE);
+        ctx.fillStyle = `rgba(255,150,110,${pulse * 0.5})`;
+        ctx.fillRect(px, py + ((this.time * 40) % TILE), TILE, 2);
+      }
+    }
+  }
+
+  drawProps(ctx) {
+    const t = this.time;
+    for (const prop of this.dungeon.props) {
+      const { x, y } = prop;
+      if (x < this.cam.x - 60 || x > this.cam.x + this.vw + 60 || y < this.cam.y - 60 || y > this.cam.y + this.vh + 60) continue;
+
+      ctx.save();
+      if (prop.type === 'chest') {
+        const open = prop.used;
+        ctx.fillStyle = 'rgba(0,0,0,.35)';
+        ctx.beginPath(); ctx.ellipse(x, y + 12, 16, 6, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = open ? '#3c3128' : '#6b4a2c';
+        ctx.fillRect(x - 15, y - 6, 30, 18);
+        ctx.fillStyle = open ? '#2b241d' : '#8a6238';
+        ctx.fillRect(x - 15, open ? y - 22 : y - 15, 30, 10);
+        ctx.fillStyle = prop.rich ? '#e2b34a' : '#c0a070';
+        ctx.fillRect(x - 15, y - 7, 30, 3);
+        if (!open) {
+          ctx.fillStyle = prop.rich ? '#e2b34a' : '#c0a070';
+          ctx.fillRect(x - 3, y - 4, 6, 7);
+          ctx.globalAlpha = 0.3 + Math.sin(t * 3) * 0.15;
+          ctx.shadowBlur = 20; ctx.shadowColor = prop.rich ? '#e2b34a' : '#c0a070';
+          ctx.fillRect(x - 15, y - 15, 30, 27);
+        }
+      } else if (prop.type === 'fountain') {
+        ctx.fillStyle = 'rgba(0,0,0,.35)';
+        ctx.beginPath(); ctx.ellipse(x, y + 10, 20, 8, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#4a4a56';
+        ctx.beginPath(); ctx.ellipse(x, y, 20, 11, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = prop.used ? '#26262e' : '#2f7f9e';
+        ctx.beginPath(); ctx.ellipse(x, y, 15, 7.5, 0, 0, Math.PI * 2); ctx.fill();
+        if (!prop.used) {
+          ctx.globalAlpha = 0.5 + Math.sin(t * 2.4) * 0.2;
+          ctx.shadowBlur = 22; ctx.shadowColor = '#4fd0a8';
+          ctx.fillStyle = '#6fe0c0';
+          ctx.beginPath(); ctx.ellipse(x, y - 2, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+        }
+      } else if (prop.type === 'shrine') {
+        ctx.fillStyle = 'rgba(0,0,0,.35)';
+        ctx.beginPath(); ctx.ellipse(x, y + 14, 15, 6, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#3a3446';
+        ctx.fillRect(x - 11, y - 10, 22, 24);
+        ctx.fillStyle = '#4d4560';
+        ctx.fillRect(x - 11, y - 10, 22, 4);
+        if (!prop.used) {
+          const fy = y - 26 + Math.sin(t * 1.8) * 4;
+          ctx.shadowBlur = 26; ctx.shadowColor = '#7ea8ff';
+          ctx.fillStyle = '#bcd2ff';
+          ctx.beginPath(); ctx.arc(x, fy, 7, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 0.4;
+          ctx.beginPath(); ctx.arc(x, fy, 13 + Math.sin(t * 3) * 2, 0, Math.PI * 2); ctx.fill();
+        }
+      } else if (prop.type === 'redshrine') {
+        const dead = prop.used;
+        ctx.fillStyle = 'rgba(0,0,0,.4)';
+        ctx.beginPath(); ctx.ellipse(x, y + 16, 17, 7, 0, 0, Math.PI * 2); ctx.fill();
+        // Obelisk
+        ctx.fillStyle = dead ? '#2a2226' : '#43262a';
+        ctx.beginPath();
+        ctx.moveTo(x - 10, y + 14); ctx.lineTo(x - 7, y - 24);
+        ctx.lineTo(x + 7, y - 24); ctx.lineTo(x + 10, y + 14);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = dead ? '#3a2f34' : '#5e3238';
+        ctx.fillRect(x - 8, y - 24, 16, 4);
+        if (!dead) {
+          const pulse = prop.active ? 0.7 + Math.sin(t * 14) * 0.3 : 0.45 + Math.sin(t * 2.4) * 0.2;
+          ctx.globalAlpha = pulse;
+          ctx.shadowBlur = 26; ctx.shadowColor = '#ff3b1f';
+          ctx.fillStyle = '#ff5a3c';
+          ctx.beginPath(); ctx.arc(x, y - 6, 6.5, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = pulse * 0.4;
+          ctx.beginPath(); ctx.arc(x, y - 6, 14 + Math.sin(t * 3) * 3, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1;
+          if (prop.active) {
+            ctx.strokeStyle = '#ff5a3c';
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath(); ctx.arc(x, y, 40 + Math.sin(t * 6) * 5, 0, Math.PI * 2); ctx.stroke();
+
+            // How many guardians are left, right on the shrine itself.
+            const left = prop.remaining ?? prop.waveTotal;
+            ctx.globalAlpha = 1;
+            ctx.shadowBlur = 0;
+            ctx.textAlign = 'center';
+            ctx.font = '700 22px system-ui';
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = 'rgba(0,0,0,.9)';
+            ctx.strokeText(String(left), x, y - 40);
+            ctx.fillStyle = '#ff8a6a';
+            ctx.fillText(String(left), x, y - 40);
+            ctx.font = '600 10px system-ui';
+            ctx.lineWidth = 3;
+            ctx.strokeText('GUARDIANS', x, y - 27);
+            ctx.fillStyle = 'rgba(255,180,160,.85)';
+            ctx.fillText('GUARDIANS', x, y - 27);
+          }
+        }
+
+      } else if (prop.type === 'gate') {
+        const done = this.bossDefeated;
+        ctx.strokeStyle = done ? '#4a4a56' : '#c8452f';
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = done ? 0 : 26;
+        ctx.shadowColor = '#c8452f';
+        for (let i = 0; i < 3; i++) {
+          const r = 26 + i * 13;
+          ctx.globalAlpha = done ? 0.3 : 0.55 - i * 0.12;
+          ctx.beginPath();
+          ctx.arc(x, y, r, t * (i % 2 ? -0.6 : 0.6) + i, t * (i % 2 ? -0.6 : 0.6) + i + Math.PI * 1.35);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = done ? 0.4 : 0.85;
+        ctx.fillStyle = done ? '#5a5a66' : '#ff9a6a';
+        ctx.font = '700 22px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('☠', x, y + 8);
+      }
+      ctx.restore();
+    }
+
+    // Torch flicker
+    for (const tor of this.dungeon.torches) {
+      if (tor.x < this.cam.x - 40 || tor.x > this.cam.x + this.vw + 40 ||
+          tor.y < this.cam.y - 40 || tor.y > this.cam.y + this.vh + 40) continue;
+      const f = 0.7 + Math.sin(t * 8 + tor.phase) * 0.15 + Math.sin(t * 17.3 + tor.phase * 2) * 0.1;
+      ctx.save();
+      ctx.shadowBlur = 22 * f;
+      ctx.shadowColor = '#ffa94d';
+      ctx.fillStyle = `rgba(255,190,110,${0.85 * f})`;
+      ctx.beginPath();
+      ctx.ellipse(tor.x, tor.y - 6, 3.5 * f, 6 * f, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#4b3a2a';
+      ctx.fillRect(tor.x - 2, tor.y - 2, 4, 8);
+      ctx.restore();
+    }
+  }
+
+  drawImpactMarkers(ctx) {
+    for (const m of this.impacts) {
+      const t = U.clamp(m.t / m.delay, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = 0.35 + t * 0.45;
+      ctx.strokeStyle = m.color;
+      ctx.lineWidth = m.hostile ? 3 : 2.5;
+      ctx.beginPath(); ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 0.14 + t * 0.3;
+      ctx.fillStyle = m.color;
+      ctx.beginPath(); ctx.arc(m.x, m.y, m.radius * t, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  drawEnemies(ctx) {
+    for (const e of this.enemies) {
+      if (e.x < this.cam.x - 80 || e.x > this.cam.x + this.vw + 80 ||
+          e.y < this.cam.y - 80 || e.y > this.cam.y + this.vh + 80) continue;
+
+      const bobY = e.def.flying ? Math.sin(e.bob) * 5 : 0;
+      const x = e.x, y = e.y + bobY;
+
+      ctx.save();
+      // shadow
+      ctx.fillStyle = 'rgba(0,0,0,.34)';
+      ctx.beginPath();
+      ctx.ellipse(e.x, e.y + e.radius * 0.75, e.radius * 0.85, e.radius * 0.34, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Boss moves still use their own state names; both funnel into the same
+      // blue-means-parry / red-means-dodge language.
+      const bossTell = e.state === 'slamWind' ? 'red' : e.state === 'chargeWind' ? 'red' : null;
+      if (bossTell) this.drawTelegraph(ctx, e, x, y, bossTell, U.clamp(e.stateT / 0.7, 0, 1), null);
+      if (e.atk && e.atk.phase === 'wind') {
+        this.drawTelegraph(ctx, e, x, y, e.atk.def.kind,
+          U.clamp(e.atk.t / e.atk.def.wind, 0, 1), e.atk);
+      }
+      if (e.stagger > 0) {
+        ctx.globalAlpha = 0.3 + Math.sin(this.time * 12) * 0.12;
+        ctx.strokeStyle = '#8fd4ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, e.radius * 1.5, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      if (e.root > 0) {
+        ctx.globalAlpha = 0.6;
+        ctx.strokeStyle = '#5f8f3a';
+        ctx.lineWidth = 2.5;
+        for (let k = 0; k < 4; k++) {
+          const ra = (k / 4) * Math.PI * 2 + this.time;
+          ctx.beginPath();
+          ctx.moveTo(x + Math.cos(ra) * e.radius * 1.4, y + Math.sin(ra) * e.radius * 0.8);
+          ctx.lineTo(x, y + e.radius * 0.5);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+      if (e.chill > 0) {
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = '#a9dcff';
+        ctx.beginPath(); ctx.arc(x, y, e.radius * 1.25, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      const body = e.flash > 0 ? '#ffffff' : e.def.color;
+      ctx.fillStyle = body;
+      if (e.def.ghost) ctx.globalAlpha = 0.72;
+      ctx.shadowBlur = e.elite || e.def.boss ? 20 : 0;
+      ctx.shadowColor = e.def.color;
+
+      if (e.type === 'slime') {
+        const squish = 1 + Math.sin(e.bob * 1.3) * 0.12;
+        ctx.beginPath();
+        ctx.ellipse(x, y + e.radius * (1 - squish) * 0.5, e.radius * squish, e.radius / squish, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (e.type === 'bat') {
+        const flap = Math.sin(e.bob * 3.2) * e.radius * 0.9;
+        ctx.beginPath();
+        ctx.moveTo(x - e.radius * 1.7, y + flap);
+        ctx.quadraticCurveTo(x, y - e.radius, x + e.radius * 1.7, y + flap);
+        ctx.quadraticCurveTo(x, y + e.radius * 0.9, x - e.radius * 1.7, y + flap);
+        ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, e.radius * 0.62, 0, Math.PI * 2); ctx.fill();
+      } else if (e.type === 'wraith') {
+        ctx.beginPath();
+        ctx.moveTo(x, y - e.radius);
+        ctx.quadraticCurveTo(x + e.radius, y, x + e.radius * 0.7, y + e.radius);
+        for (let i = 0; i < 4; i++) {
+          const t2 = i / 3;
+          ctx.quadraticCurveTo(
+            x + e.radius * 0.7 - e.radius * 1.4 * (t2 + 0.12),
+            y + e.radius + Math.sin(this.time * 5 + i) * 4,
+            x + e.radius * 0.7 - e.radius * 1.4 * (t2 + 0.25), y + e.radius);
+        }
+        ctx.quadraticCurveTo(x - e.radius, y, x, y - e.radius);
+        ctx.fill();
+      } else {
+        // brute / skeleton / boss — blocky silhouette
+        const w = e.radius * 1.5, h = e.radius * 1.9;
+        ctx.fillRect(x - w / 2, y - h / 2, w, h);
+        ctx.fillStyle = e.flash > 0 ? '#fff' : e.def.dark;
+        ctx.fillRect(x - w / 2, y - h / 2, w, h * 0.28);
+        ctx.fillStyle = body;
+        ctx.beginPath(); ctx.arc(x, y - h / 2 - e.radius * 0.35, e.radius * 0.55, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // eyes
+      if (!e.def.ghost) {
+        ctx.shadowBlur = 8; ctx.shadowColor = '#ff5a3c';
+        ctx.fillStyle = e.aggro ? '#ff6b52' : '#1a1a20';
+        const ex = e.def.ai === 'boss' ? 9 : 4;
+        ctx.fillRect(x - ex - 2, y - e.radius * 0.35, 3.2, 3.2);
+        ctx.fillRect(x + ex - 1, y - e.radius * 0.35, 3.2, 3.2);
+      }
+      ctx.restore();
+
+      // health bar for elites & wounded enemies
+      if ((e.elite || e.hp < e.maxHp) && !e.def.boss) {
+        const w = e.radius * 2.2;
+        ctx.fillStyle = 'rgba(0,0,0,.65)';
+        ctx.fillRect(x - w / 2, y - e.radius - 13, w, 4);
+        ctx.fillStyle = e.elite ? '#e2b34a' : '#e1553c';
+        ctx.fillRect(x - w / 2, y - e.radius - 13, w * (e.hp / e.maxHp), 4);
+      }
+      if (e.elite) {
+        ctx.fillStyle = '#e2b34a';
+        ctx.font = '9px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('ELITE', x, y - e.radius - 18);
+      }
+      // Shrine guardians wear a mark, so you can tell which of the enemies in
+      // the room are the ones actually holding the shrine open.
+      if (e.guardian && !e.guardian.used) {
+        ctx.save();
+        ctx.translate(x, y - e.radius - (e.elite ? 28 : 20));
+        ctx.globalAlpha = 0.85 + Math.sin(this.time * 5) * 0.15;
+        ctx.fillStyle = '#ff3b1f';
+        ctx.shadowBlur = 8; ctx.shadowColor = '#ff3b1f';
+        ctx.beginPath();
+        ctx.moveTo(0, -5); ctx.lineTo(5, 0); ctx.lineTo(0, 5); ctx.lineTo(-5, 0);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  /* The read. A ring closes toward the enemy as the wind-up completes — it
+     touches the body exactly when the hit lands, so timing is judged by
+     distance rather than by counting frames. Blue can be parried, red cannot. */
+  drawTelegraph(ctx, e, x, y, kind, progress, atk) {
+    const red = kind === 'red';
+    const col = red ? '#ff5a3c' : '#8fd4ff';
+    const r = e.radius;
+
+    ctx.save();
+    // Closing ring
+    const ringR = U.lerp(r * 3.4, r * 1.05, progress);
+    ctx.globalAlpha = 0.35 + progress * 0.5;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = red ? 3.5 : 2.2;
+    if (red) { ctx.shadowBlur = 16; ctx.shadowColor = col; }
+    ctx.beginPath();
+    ctx.arc(x, y, ringR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Direction of the blow, so you know where to stand
+    if (atk) {
+      const def = atk.def;
+      const reach = def.reach || (def.shape === 'charge' ? 150 : 90);
+      const arc = def.arc || 0.6;
+      ctx.globalAlpha = 0.10 + progress * 0.22;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.arc(x, y, reach + r, atk.angle - arc / 2, atk.angle + arc / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Body glow ramps with the wind-up
+    ctx.globalAlpha = (0.16 + progress * 0.3) * (red ? 1 : 0.75);
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 1.35, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Unblockable badge: never ambiguous at a glance
+    if (red) {
+      ctx.globalAlpha = 0.5 + Math.sin(this.time * 22) * 0.3;
+      ctx.fillStyle = '#ffd0c4';
+      ctx.font = '700 13px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('!', x, y - r - 16);
+    }
+    ctx.restore();
+  }
+
+  drawPlayer(ctx) {
+    const p = this.player;
+    if (p.dead) return;
+    const x = p.x, y = p.y + Math.sin(p.bob) * 1.6;
+    const c = p.cls.color;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,.38)';
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y + 11, 11, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Sword arc
+    if (p.swing) {
+      const s = p.swing;
+      const prog = U.clamp((s.t - s.wind) / (s.dur - s.wind), 0, 1);
+      if (s.t >= s.wind * 0.5) {
+        const half = s.arc / 2;
+        const sweep = s.arc >= Math.PI * 2 ? Math.PI * 2 * prog : U.lerp(-half, half, prog) ;
+        const a0 = s.arc >= Math.PI * 2 ? s.angle : s.angle - half;
+        const a1 = s.arc >= Math.PI * 2 ? s.angle + sweep : s.angle + sweep * s.side;
+        ctx.globalAlpha = (1 - prog) * (s.heavy ? 0.8 : 0.55);
+        const grad = ctx.createRadialGradient(x, y, s.range * 0.3, x, y, s.range);
+        grad.addColorStop(0, 'rgba(255,255,255,0)');
+        grad.addColorStop(1, s.heavy ? 'rgba(255,220,150,.95)' : 'rgba(255,255,255,.8)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.arc(x, y, s.range, Math.min(a0, a1), Math.max(a0, a1));
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Body
+    if (p.iframes > 0 && Math.floor(this.time * 24) % 2 === 0) ctx.globalAlpha = 0.45;
+    ctx.fillStyle = p.hurtFlash > 0 ? '#ffffff' : '#d8d2c4';
+    ctx.fillRect(x - 7, y - 6, 14, 17);
+    ctx.fillStyle = p.cls.torso;
+    ctx.fillRect(x - 7, y - 6, 14, 6);
+    ctx.fillStyle = p.hurtFlash > 0 ? '#ffffff' : '#f0e6d2';
+    ctx.beginPath(); ctx.arc(x, y - 12, 6.5, 0, Math.PI * 2); ctx.fill();
+
+    // Weapon in hand
+    const hx = x + Math.cos(p.aim) * 12, hy = y + Math.sin(p.aim) * 12;
+    ctx.save();
+    ctx.translate(hx, hy);
+    ctx.rotate(p.aim);
+    p.cls.drawWeapon(ctx, p, this);
+    ctx.restore();
+
+    // Parry guard: a bright arc facing the aim, and an afterglow on success.
+    if (p.parryT > 0 || p.parryFlash > 0) {
+      const open = p.parryT > 0;
+      const a = open ? p.parryT / PARRY.window : p.parryFlash / 0.4;
+      ctx.save();
+      ctx.globalAlpha = open ? 0.45 + a * 0.5 : a * 0.85;
+      ctx.strokeStyle = open ? '#8fd4ff' : '#ffffff';
+      ctx.lineWidth = open ? 3 : 4.5;
+      ctx.shadowBlur = 14; ctx.shadowColor = '#8fd4ff';
+      ctx.beginPath();
+      ctx.arc(x, y, 21, p.aim - 1.05, p.aim + 1.05);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Charge ring
+    if (p.charging) {
+      const t = U.clamp(p.chargeT / p.cls.heavy.chargeTime, 0, 1);
+      ctx.strokeStyle = t >= 1 ? '#fff1c9' : c;
+      ctx.lineWidth = 2.5;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(x, y, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * t);
+      ctx.stroke();
+      if (t >= 1) {
+        ctx.globalAlpha = 0.35 + Math.sin(this.time * 14) * 0.2;
+        ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  drawReticle(ctx) {
+    if (this.state !== 'playing') return;
+    const { x, y } = this.mouseWorld;
+    ctx.save();
+    ctx.strokeStyle = this.player.cls.color;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 13, y); ctx.lineTo(x - 4, y);
+    ctx.moveTo(x + 4, y); ctx.lineTo(x + 13, y);
+    ctx.moveTo(x, y - 13); ctx.lineTo(x, y - 4);
+    ctx.moveTo(x, y + 4); ctx.lineTo(x, y + 13);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawLighting() {
+    const l = this.lctx;
+    const W = this.light.width, H = this.light.height;
+    l.setTransform(1, 0, 0, 1, 0, 0);
+    l.globalCompositeOperation = 'source-over';
+    l.fillStyle = 'rgba(4,4,8,0.90)';
+    l.clearRect(0, 0, W, H);
+    l.fillRect(0, 0, W, H);
+
+    l.globalCompositeOperation = 'destination-out';
+    // Blit the pre-rendered falloff instead of building a gradient per light
+    // per frame — same look, a fraction of the cost, and it scales with the
+    // torch count rather than fighting it.
+    const cut = (wx, wy, radius, strength = 1) => {
+      const sx = (wx - this.cam.x + this.fx.shakeX) / 2;
+      const sy = (wy - this.cam.y + this.fx.shakeY) / 2;
+      const r = radius / 2;
+      if (sx < -r || sx > W + r || sy < -r || sy > H + r) return;
+      l.globalAlpha = strength;
+      l.drawImage(this.glow, sx - r, sy - r, r * 2, r * 2);
+      l.globalAlpha = 1;
+    };
+
+    const flick = 1 + Math.sin(this.time * 9) * 0.015;
+    cut(this.player.x, this.player.y, 470 * flick, 1);
+    for (const tor of this.dungeon.torches) {
+      const f = 0.85 + Math.sin(this.time * 7 + tor.phase) * 0.1;
+      cut(tor.x, tor.y, 230 * f, 0.92);
+    }
+    for (const prop of this.dungeon.props) {
+      if (prop.used && prop.type !== 'gate') continue;
+      cut(prop.x, prop.y, prop.type === 'gate' ? 300 : 150, 0.8);
+    }
+    for (const pr of this.projectiles) cut(pr.x, pr.y, 90, 0.55);
+    for (const m of this.minions) cut(m.x, m.y, 130, 0.5);
+    for (const z of this.zones) cut(z.x, z.y, z.radius * 2.2, 0.45);
+    for (const m of this.impacts) cut(m.x, m.y, m.radius * 2.2, 0.5);
+    if (this.boss) cut(this.boss.x, this.boss.y, 320, 0.7);
+
+    l.globalCompositeOperation = 'source-over';
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(this.light, 0, 0, this.vw, this.vh);
+
+    // Warm ambient tint over everything
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = '#ffb27a';
+    ctx.fillRect(0, 0, this.vw, this.vh);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+
+    // Vignette
+    const vg = ctx.createRadialGradient(this.vw / 2, this.vh / 2, Math.min(this.vw, this.vh) * 0.32,
+      this.vw / 2, this.vh / 2, Math.max(this.vw, this.vh) * 0.75);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,.72)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, this.vw, this.vh);
+    ctx.restore();
+  }
+
+  drawOverlays(ctx) {
+    ctx.save();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+    if (this.fx.flash > 0) {
+      ctx.globalAlpha = Math.min(0.6, this.fx.flash);
+      ctx.fillStyle = this.fx.flashColor;
+      ctx.fillRect(0, 0, this.vw, this.vh);
+      ctx.globalAlpha = 1;
+    }
+
+    // Low-health pulse
+    const hpFrac = this.player.hp / this.player.maxHp;
+    if (hpFrac < 0.3 && !this.player.dead) {
+      ctx.globalAlpha = (0.3 - hpFrac) * (0.9 + Math.sin(this.time * 6) * 0.5);
+      const g = ctx.createRadialGradient(this.vw / 2, this.vh / 2, this.vh * 0.28, this.vw / 2, this.vh / 2, this.vh * 0.72);
+      g.addColorStop(0, 'rgba(200,40,20,0)');
+      g.addColorStop(1, 'rgba(200,40,20,.95)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, this.vw, this.vh);
+      ctx.globalAlpha = 1;
+    }
+
+    // Boss health bar
+    if (this.boss && !this.boss.dead) {
+      const w = Math.min(560, this.vw * 0.55), h = 15;
+      const x = (this.vw - w) / 2, y = this.vh - 74;
+      ctx.fillStyle = 'rgba(0,0,0,.72)';
+      ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = '#c8452f';
+      ctx.fillRect(x, y, w * (this.boss.hp / this.boss.maxHp), h);
+      ctx.strokeStyle = 'rgba(226,179,74,.5)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = '#f0e6d2';
+      ctx.font = '600 12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(`THE HOLLOW WARDEN — PHASE ${this.boss.phase}`, this.vw / 2, y - 8);
+    }
+
+    /* Shrine fight banner. It sits above the boss bar's slot and mirrors it,
+       because it is the same kind of commitment: a fight you have started and
+       have to finish. */
+    if (this.activeShrine) {
+      const s = this.activeShrine;
+      const total = s.waveTotal || 1;
+      const left = s.remaining ?? total;
+      const w = Math.min(420, this.vw * 0.4), h = 11;
+      const x = (this.vw - w) / 2, y = this.vh - 112;
+      ctx.fillStyle = 'rgba(0,0,0,.72)';
+      ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = '#ff3b1f';
+      ctx.fillRect(x, y, w * ((total - left) / total), h);
+      ctx.strokeStyle = 'rgba(255,90,60,.55)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = '#ffb9a8';
+      ctx.font = '600 11px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(`RED SHRINE — ${left} GUARDIAN${left === 1 ? '' : 'S'} REMAIN${left === 1 ? 'S' : ''}`,
+        this.vw / 2, y - 6);
+
+      // Point at any guardian that has wandered off screen, and at the shrine.
+      const mark = (wx, wy, col, size) => {
+        const sx = wx - this.cam.x, sy = wy - this.cam.y;
+        if (sx >= 0 && sx <= this.vw && sy >= 0 && sy <= this.vh) return;
+        const a = Math.atan2(sy - this.vh / 2, sx - this.vw / 2);
+        const px = this.vw / 2 + Math.cos(a) * (Math.min(this.vw, this.vh) * 0.36);
+        const py = this.vh / 2 + Math.sin(a) * (Math.min(this.vw, this.vh) * 0.36);
+        ctx.save();
+        ctx.translate(px, py); ctx.rotate(a);
+        ctx.globalAlpha = 0.6 + Math.sin(this.time * 4) * 0.2;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(size, 0); ctx.lineTo(-size * 0.6, -size * 0.6); ctx.lineTo(-size * 0.6, size * 0.6);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      };
+      for (const e of s.wave) if (!e.dead) mark(e.x, e.y, '#ff3b1f', 8);
+      mark(s.x, s.y, '#ff8a6a', 11);
+    }
+
+    // Off-screen pointer to the Warden's Gate once you've found it
+    if (this.gateFound && !this.bossDefeated && this.dungeon.boss) {
+      const gx = this.dungeon.boss.wx, gy = this.dungeon.boss.wy;
+      const sx = gx - this.cam.x, sy = gy - this.cam.y;
+      if (sx < 0 || sx > this.vw || sy < 0 || sy > this.vh) {
+        const a = Math.atan2(sy - this.vh / 2, sx - this.vw / 2);
+        const px = this.vw / 2 + Math.cos(a) * (Math.min(this.vw, this.vh) * 0.4);
+        const py = this.vh / 2 + Math.sin(a) * (Math.min(this.vw, this.vh) * 0.4);
+        ctx.save();
+        ctx.translate(px, py); ctx.rotate(a);
+        ctx.globalAlpha = 0.55 + Math.sin(this.time * 3) * 0.2;
+        ctx.fillStyle = '#c8452f';
+        ctx.beginPath();
+        ctx.moveTo(11, 0); ctx.lineTo(-7, -7); ctx.lineTo(-7, 7);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    this.drawRoulette(ctx);
+    ctx.restore();
+  }
+
+  /* ---------------- maps ---------------- */
+
+  /* The explored terrain only changes when you explore, so it is painted once
+     into an offscreen canvas and blitted. Both maps read from this cache;
+     only the moving markers are drawn per frame. */
+  syncExploreCanvas() {
+    const d = this.dungeon;
+    const px = 4;   // cache resolution, pixels per tile
+    if (!this.exploreCanvas || this.exploreCanvas.width !== d.w * px) {
+      this.exploreCanvas = document.createElement('canvas');
+      this.exploreCanvas.width = d.w * px;
+      this.exploreCanvas.height = d.h * px;
+      this.exploreCtx = this.exploreCanvas.getContext('2d');
+      this.explorePx = px;
+      // Repaint everything already known (fresh map, or a resumed save).
+      d.newlyExplored.length = 0;
+      for (let ty = 0; ty < d.h; ty++) {
+        for (let tx = 0; tx < d.w; tx++) if (d.isExplored(tx, ty)) this.paintExplored(tx, ty);
+      }
+      return;
+    }
+    const list = d.newlyExplored;
+    for (let i = 0; i < list.length; i += 2) this.paintExplored(list[i], list[i + 1]);
+    list.length = 0;
+  }
+
+  paintExplored(tx, ty) {
+    const d = this.dungeon, px = this.explorePx;
+    const t = d.at(tx, ty);
+    if (t === T.WALL) return;
+    this.exploreCtx.fillStyle = t === T.WATER ? '#26505f' : d.palette(d.tierAt(tx, ty)).accent;
+    this.exploreCtx.fillRect(tx * px, ty * px, px, px);
+  }
+
+  drawMinimap() {
+    const c = this.mmctx, d = this.dungeon;
+    const size = this.minimap.width;
+    const span = 46;               // tiles across
+    const scale = size / span;
+    const pcx = this.player.x / TILE, pcy = this.player.y / TILE;
+
+    this.syncExploreCanvas();
+
+    c.clearRect(0, 0, size, size);
+    c.fillStyle = 'rgba(6,6,10,.85)';
+    c.fillRect(0, 0, size, size);
+
+    // One blit replaces the ~2,100 fillRects this used to issue per frame.
+    const px = this.explorePx;
+    c.imageSmoothingEnabled = false;
+    c.drawImage(
+      this.exploreCanvas,
+      (pcx - span / 2) * px, (pcy - span / 2) * px, span * px, span * px,
+      0, 0, size, size,
+    );
+
+    for (const prop of d.props) {
+      const tx = prop.x / TILE, ty = prop.y / TILE;
+      if (!d.isExplored(Math.floor(tx), Math.floor(ty))) continue;
+      if (prop.used && prop.type !== 'gate') continue;
+      c.fillStyle = prop.type === 'gate' ? '#ffffff' : prop.type === 'redshrine' ? '#ff3b1f'
+        : prop.type === 'shrine' ? '#7ea8ff' : prop.type === 'fountain' ? '#4fd0a8' : '#e2b34a';
+      c.fillRect((tx - pcx + span / 2) * scale - 2, (ty - pcy + span / 2) * scale - 2, 4.5, 4.5);
+    }
+
+    for (const e of this.enemies) {
+      if (U.dist(e.x, e.y, this.player.x, this.player.y) > span / 2 * TILE) continue;
+      c.fillStyle = e.def.boss ? '#ff3b1f'
+        : (e.guardian && !e.guardian.used) ? '#ff3b1f'
+        : e.elite ? '#ffb347' : 'rgba(225,85,60,.9)';
+      const s = e.def.boss ? 6 : (e.guardian && !e.guardian.used) ? 5 : 3;
+      c.fillRect((e.x / TILE - pcx + span / 2) * scale - s / 2, (e.y / TILE - pcy + span / 2) * scale - s / 2, s, s);
+    }
+
+    c.fillStyle = '#ffffff';
+    c.beginPath();
+    c.arc(size / 2, size / 2, 3.4, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.55)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(size / 2, size / 2);
+    c.lineTo(size / 2 + Math.cos(this.player.aim) * 11, size / 2 + Math.sin(this.player.aim) * 11);
+    c.stroke();
+  }
+
+  drawBigMap() {
+    const c = this.bigctx, d = this.dungeon;
+    const W = this.bigmap.width, H = this.bigmap.height;
+    c.clearRect(0, 0, W, H);
+    const scale = Math.min(W / d.w, H / d.h);
+    const ox = (W - d.w * scale) / 2, oy = (H - d.h * scale) / 2;
+
+    this.syncExploreCanvas();
+    c.imageSmoothingEnabled = false;
+    c.drawImage(this.exploreCanvas, ox, oy, d.w * scale, d.h * scale);
+
+    for (const prop of d.props) {
+      const tx = Math.floor(prop.x / TILE), ty = Math.floor(prop.y / TILE);
+      if (!d.isExplored(tx, ty)) continue;
+      if (prop.used && prop.type !== 'gate') continue;
+      c.fillStyle = prop.type === 'gate' ? '#ffffff' : prop.type === 'redshrine' ? '#ff3b1f'
+        : prop.type === 'shrine' ? '#7ea8ff' : prop.type === 'fountain' ? '#4fd0a8' : '#e2b34a';
+      c.fillRect(ox + tx * scale - 2, oy + ty * scale - 2, 5, 5);
+    }
+
+    c.fillStyle = '#fff';
+    c.shadowBlur = 10; c.shadowColor = '#fff';
+    c.beginPath();
+    c.arc(ox + (this.player.x / TILE) * scale, oy + (this.player.y / TILE) * scale, 4, 0, Math.PI * 2);
+    c.fill();
+    c.shadowBlur = 0;
+
+    c.fillStyle = 'rgba(232,226,212,.6)';
+    c.font = '11px system-ui';
+    c.textAlign = 'left';
+    c.fillText(`seed ${this.seedText}`, 10, H - 10);
+  }
+}
