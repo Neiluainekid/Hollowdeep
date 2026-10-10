@@ -18,13 +18,16 @@ const MAPS = [
     w: 152, h: 152,
     roomTarget: 46,
     threatBias: 0,
+    /* Update 3.0: the first dungeon is a little gentler — ordinary enemies
+       here have less health, hit softer, and turn up elite less often. */
+    difficulty: { hp: 0.8, dmg: 0.8, elite: 0.65 },
     // 1-based boss table. Entry 1 is the gate boss for this map.
     bosses: [
-      { number: 1, type: 'flowery', name: 'Flowery', hp: 3000 },
+      { number: 1, type: 'flowery', name: 'Flowery', hp: 100000 },
     ],
     bossType: 'flowery',
     bossName: 'Flowery',
-    bossHp: 3000,
+    bossHp: 100000,
     gateLine: 'The Bloom That Watches. Press E when you are ready.',
     intro: 'Tripolisis — Dungeon of Chaos',
     regions: [
@@ -36,12 +39,12 @@ const MAPS = [
       { name: "Warden's Reach", floor: '#4b3854', wall: '#170e1b', accent: '#66486f' },
     ],
     tables: [
-      ['slime', 'slime', 'bat'],
-      ['slime', 'bat', 'bat', 'skeleton', 'spitter'],
-      ['bat', 'skeleton', 'spitter', 'brute', 'revenant', 'tridon'],
-      ['skeleton', 'crossbow', 'brute', 'revenant', 'wraith', 'tridon'],
-      ['crossbow', 'brute', 'wraith', 'revenant', 'ironclad', 'mortar'],
-      ['wraith', 'ironclad', 'mortar', 'revenant', 'crossbow', 'brute'],
+      ['slime', 'slime', 'bat', 'hound'],
+      ['slime', 'bat', 'hound', 'skeleton', 'spitter', 'cop'],
+      ['bat', 'skeleton', 'spitter', 'imp', 'shroom', 'brute', 'revenant', 'tridon', 'cop'],
+      ['skeleton', 'crossbow', 'imp', 'mimic', 'brute', 'revenant', 'wraith', 'tridon', 'lancer'],
+      ['crossbow', 'brute', 'wraith', 'revenant', 'ironclad', 'mortar', 'lancer', 'shroom', 'cop'],
+      ['wraith', 'ironclad', 'mortar', 'revenant', 'crossbow', 'brute', 'mimic', 'lancer'],
     ],
   },
   {
@@ -55,16 +58,17 @@ const MAPS = [
     w: 168, h: 168,
     roomTarget: 52,
     threatBias: 2,          // picks up where Tripolisis left off
+    difficulty: { hp: 1, dmg: 1, elite: 1 },
     bosses: [
-      { number: 1, type: 'sungod', name: 'The Sun God', hp: 3000 },
-      { number: 2, type: 'judgement', name: 'Judgement', hp: 3000 },
+      { number: 1, type: 'sungod', name: 'The Sun God', hp: 200000 },
+      { number: 2, type: 'judgement', name: 'Judgement', hp: 200000 },
     ],
     bossType: 'sungod',
     bossName: 'The Sun God',
-    bossHp: 3000,
+    bossHp: 200000,
     // Sarapolis ends with a second fight: beat the Sun God and Judgement
     // steps out of the wreckage.
-    finalBoss: { type: 'judgement', name: 'Judgement', hp: 3000 },
+    finalBoss: { type: 'judgement', name: 'Judgement', hp: 200000 },
     gateLine: 'The Predicament King waits. Press E when you are ready.',
     intro: 'Sarapolis — Dungeon of Devastation',
     regions: [
@@ -76,12 +80,12 @@ const MAPS = [
       { name: 'Devastation', floor: '#5a2f2f', wall: '#1e0d0d', accent: '#7d3a36' },
     ],
     tables: [
-      ['skeleton', 'spitter', 'revenant', 'brute'],
-      ['spitter', 'crossbow', 'revenant', 'wraith', 'tridon'],
-      ['crossbow', 'revenant', 'ironclad', 'wraith', 'mortar', 'tridon'],
-      ['ironclad', 'mortar', 'revenant', 'wraith', 'crossbow'],
-      ['ironclad', 'mortar', 'wraith', 'revenant', 'ironclad'],
-      ['ironclad', 'wraith', 'mortar', 'revenant', 'ironclad'],
+      ['skeleton', 'spitter', 'revenant', 'brute', 'hound', 'cop'],
+      ['spitter', 'crossbow', 'revenant', 'wraith', 'tridon', 'imp', 'cop'],
+      ['crossbow', 'revenant', 'ironclad', 'wraith', 'mortar', 'tridon', 'shroom', 'mimic'],
+      ['ironclad', 'mortar', 'revenant', 'wraith', 'crossbow', 'lancer', 'imp'],
+      ['ironclad', 'mortar', 'wraith', 'revenant', 'ironclad', 'lancer', 'cop'],
+      ['ironclad', 'wraith', 'mortar', 'revenant', 'ironclad', 'mimic', 'lancer'],
     ],
   },
 ];

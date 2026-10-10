@@ -44,18 +44,21 @@ const CLASSES = {
     lifeOnKill: 3,   // pressing forward is how a melee build stays alive
     blurb: 'Every kill returns a sliver of health. Close the distance.',
 
-    // Two stances on the R wheel: reach and speed, or weight and armour.
+    /* Update 3.0: the two modes are now Sword and Double Sword. The Double
+       Sword is heavier on your feet but gives +10 health, and its heavy is a
+       slice that carves straight through a line of enemies — at the cost of
+       your dash for 3 seconds afterwards. */
     loadout: {
-      kind: 'stance', label: 'Stance', options: [
+      kind: 'blade', label: 'Blade', options: [
         {
-          id: 'swift', name: 'Swift Stance', icon: '≫', color: '#e2b34a',
-          desc: 'Quick, wide swings. Standard reach and guard.',
+          id: 'sword', name: 'Sword', icon: '⚔', color: '#e2b34a',
+          desc: 'The usual: quick, wide swings and a charged Cleave.',
           dmg: 1, cd: 1, knock: 1, dr: 0, arc: 1,
         },
         {
-          id: 'heavyStance', name: 'Heavy Stance', icon: '▣', color: '#d78a4a',
-          desc: '+45% damage and knockback, 30% slower, and 12% less damage taken.',
-          dmg: 1.45, cd: 1.3, knock: 1.6, dr: 0.12, arc: 1.15,
+          id: 'doubleSword', name: 'Double Sword', icon: '⚚', color: '#ffe6b0',
+          desc: 'Two blades. Slower on your feet, +10 health. Heavy slices through a whole line — then no dash for 3s.',
+          dmg: 1.2, cd: 0.92, knock: 1, dr: 0, arc: 1.1, speedMul: 0.82, hpBonus: 10,
         },
       ],
     },
@@ -76,6 +79,12 @@ const CLASSES = {
     onHeavy(p, game, power) {
       const h = this.heavy;
       const st = p.slotDef;
+      if (st.id === 'doubleSword') {
+        // The dash itself does the cutting (Player.dashStrike).
+        p.sliceThrough(game, power);
+        game.audio.swordSwing(true);
+        return;
+      }
       p.startSwing(game, {
         damage: h.damage * power * p.power * p.heavyMul * st.dmg,
         range: h.range * p.rangeMul,
@@ -95,14 +104,23 @@ const CLASSES = {
         tilt = U.lerp(-1.3 * p.swing.side, 1.3 * p.swing.side, prog);
       }
       ctx.rotate(tilt);
-      ctx.fillStyle = '#5c4326';
-      ctx.fillRect(-3, -2.2, 9, 4.4);              // grip
-      ctx.fillStyle = '#8f7245';
-      ctx.fillRect(5, -4.5, 4, 9);                 // crossguard
-      ctx.fillStyle = p.swing && p.swing.heavy ? '#ffe6b0' : p.tier.blade;
-      ctx.fillRect(8, -2.6, 26 * p.rangeMul, 5.2); // blade
-      ctx.fillStyle = 'rgba(255,255,255,.35)';
-      ctx.fillRect(8, -2.6, 26 * p.rangeMul, 1.6);
+      const blade = (offY) => {
+        ctx.fillStyle = '#5c4326';
+        ctx.fillRect(-3, offY - 2.2, 9, 4.4);              // grip
+        ctx.fillStyle = '#8f7245';
+        ctx.fillRect(5, offY - 4.5, 4, 9);                 // crossguard
+        ctx.fillStyle = p.swing && p.swing.heavy ? '#ffe6b0' : p.tier.blade;
+        ctx.fillRect(8, offY - 2.6, 26 * p.rangeMul, 5.2); // blade
+        ctx.fillStyle = 'rgba(255,255,255,.35)';
+        ctx.fillRect(8, offY - 2.6, 26 * p.rangeMul, 1.6);
+      };
+      if (p.slotDef && p.slotDef.id === 'doubleSword') {
+        // Two blades, splayed a little so both read at a glance.
+        ctx.save(); ctx.rotate(-0.22); blade(-4); ctx.restore();
+        ctx.save(); ctx.rotate(0.22); blade(4); ctx.restore();
+      } else {
+        blade(0);
+      }
     },
   },
 
@@ -154,9 +172,10 @@ const CLASSES = {
           desc: 'Slingshot. 15 damage a shot, 20 on a charged pierce.',
         },
         {
-          id: 'grenades', name: 'Hand Grenades', icon: '✹', color: '#ffb347',
-          desc: 'Lobbed explosives — 20 ammo apiece, big blast, no aiming finesse.',
-          ammoCost: 20,
+          // Update 3.0: one grenade every 1m25s, but it is a real bomb now.
+          id: 'grenades', name: 'Hand Grenade', icon: '✹', color: '#ffb347',
+          desc: '100–500 damage to every enemy in a 5×5 area. 3 second fuse, 1:25 cooldown.',
+          cooldown: 85,
         },
       ],
     },
@@ -173,6 +192,7 @@ const CLASSES = {
           damage: a.damage * p.power,
           speed: a.projSpeed, life: a.projLife, radius: 5,
           knock: a.knock * p.knockMul, pierce: false, color: p.tier.tint,
+          sling: true,
         });
       }
       game.fx.spark(p.x + Math.cos(p.aim) * 16, p.y + Math.sin(p.aim) * 16, {
@@ -203,28 +223,33 @@ const CLASSES = {
       game.audio.slingShot(p.weaponTier, true);
     },
 
-    // Grenades bill 20 ammo on top of the normal shot cost, and land as a
-    // delayed ground impact so the blast is something you can walk out of.
+    /* Update 3.0 grenade: nerfed to one throw every 85 seconds, buffed to
+       100–500 damage rolled separately for every enemy in a 5×5-tile area,
+       on a 3 second fuse you can watch tick down. No ammo cost any more. */
     throwGrenade(p, game, heavy) {
-      const cost = 20 * p.costMul;
-      if (!p.spendEnergy(cost)) {
-        game.fx.text(p.x, p.y - 30, 'need 20 ammo', '#8fa0b8', 12);
+      const cd = p.minionCds.grenades || 0;
+      if (cd > 0) {
+        const m = Math.floor(cd / 60), s = Math.ceil(cd % 60);
+        game.fx.text(p.x, p.y - 30, `grenade in ${m}:${String(s).padStart(2, '0')}`, '#8fa0b8', 12);
         return;
       }
+      p.minionCds.grenades = 85;
       const range = Math.min(U.dist(p.x, p.y, game.mouseWorld.x, game.mouseWorld.y), 420);
       const tx = p.x + Math.cos(p.aim) * range;
       const ty = p.y + Math.sin(p.aim) * range;
       game.impacts.push({
-        x: tx, y: ty, t: 0, delay: heavy ? 0.9 : 0.7,
-        radius: heavy ? 140 : 105, color: '#ffb347',
-        directRadius: 46,
-        directDamage: (heavy ? 62 : 44) * p.power * (heavy ? p.heavyMul : 1),
-        aoeDamage: (heavy ? 34 : 24) * p.power,
+        x: tx, y: ty, t: 0, delay: 3, grenade: true,
+        fromX: p.x, fromY: p.y,
+        radius: TILE * 2.5,                   // a 5x5-tile blast
+        color: '#ffb347',
+        perEnemy: [100, 500],
+        powerMul: p.power * (heavy ? p.heavyMul : 1),
         hostile: false,
       });
       game.fx.spark(p.x + Math.cos(p.aim) * 16, p.y + Math.sin(p.aim) * 16, {
         count: 6, color: ['#ffb347', '#fff1c9'], dir: p.aim, spread: 0.4, speedMax: 160,
       });
+      game.fx.text(p.x, p.y - 34, 'GRENADE OUT', '#ffb347', 14);
       game.audio.slingShot(p.weaponTier, heavy);
     },
 
@@ -311,6 +336,11 @@ Object.assign(CLASSES, {
           id: 'heavySlam', name: 'Heavy Slam', icon: '⊙', color: '#c8a86a',
           desc: 'Drive the shield down for a heavy radial shockwave.',
         },
+        {
+          // Update 3.0.
+          id: 'ricochet', name: 'Ricochet', icon: '↻', color: '#4fd0a8',
+          desc: 'Heavy rolls you forward. Click M1 on the GREEN as you meet an enemy or wall to bounce off in a blue shockwave and keep rolling. Miss: yellow, -50 stamina.',
+        },
       ],
     },
 
@@ -330,13 +360,14 @@ Object.assign(CLASSES, {
     },
 
     onHeavy(p, game, power) {
+      if (p.slotDef.id === 'ricochet') { p.startRoll(game, power); return; }
       if (p.slotDef.id === 'heavyDash') {
         // A committed shoulder-charge: invulnerable, and it flattens a lane.
         p.dashT = 0.34;
         p.dashDir = p.aim;
         p.iframes = Math.max(p.iframes, 0.4);
         p.dashHit.clear();
-        p.shieldChargeDmg = 40 * power * p.power * p.heavyMul;
+        p.dashStrikeDmg = 40 * power * p.power * p.heavyMul;
         game.fx.ring(p.x, p.y, 26, '#8fa8c8', 20);
         game.fx.addShake(6);
         game.audio.swordSwing(true);
@@ -401,12 +432,13 @@ const ELEMENTS = [
   {
     id: 'fire', name: 'Fire', icon: '🜂', color: '#ff8a3c',
     primaryName: 'Fireball', heavyName: 'Meteor',
-    desc: 'Fireball; charge for a meteor — 50 on the target, 30 around it.',
+    desc: 'Fireball for 30–40; charge for a meteor — 50 on the target, 30 around it.',
     cost: 8, heavyCostFrac: 0.5,
 
     primary(p, game) {
+      // Update 3.0: the light cast is a real threat now, 30–40 a fireball.
       p.castProjectile(game, p.aim, {
-        damage: 14 * p.power, speed: 560, life: 1.3, radius: 7,
+        damage: U.rand(30, 40) * p.power, speed: 560, life: 1.3, radius: 7,
         color: '#ff9a4c', knock: 120, trailColor: '#ff5a1c',
       });
       game.audio.cast('fire', false);
@@ -425,9 +457,9 @@ const ELEMENTS = [
   },
   {
     id: 'earth', name: 'Earth', icon: '🜃', color: '#8fd14a',
-    primaryName: 'Vine Trap', heavyName: 'Bloom',
-    desc: 'Vines root ordinary foes and bleed them; charge to grow a turret.',
-    cost: 12, heavyCostFrac: 0.32,
+    primaryName: 'Vine Trap', heavyName: 'Earthquake',
+    desc: 'Vines root and bleed; charge for an Earthquake — 100 every 2s to all in a 10×10 area. Drains all mana for 3s.',
+    cost: 12, heavyCostFrac: 0.3,
 
     primary(p, game) {
       const tx = game.mouseWorld.x, ty = game.mouseWorld.y;
@@ -437,22 +469,30 @@ const ELEMENTS = [
       game.fx.ring(tx, ty, 40, '#8fd14a', 20);
       game.audio.cast('earth', false);
     },
+    /* Update 3.0: the Bloom turret is replaced by an Earthquake around you —
+       100 damage every 2 seconds to everything in a 10×10-tile area, and it
+       takes every drop of mana you have and holds it at zero for 3 seconds. */
     heavy(p, game) {
-      const tx = game.mouseWorld.x, ty = game.mouseWorld.y;
-      game.zones.push(new Zone('plant', tx, ty, { radius: 30, life: 30, power: p.power }));
-      game.fx.ring(tx, ty, 50, '#a8e063', 26);
+      game.zones.push(new Zone('quake', p.x, p.y, {
+        radius: TILE * 5, life: 6, tickEvery: 2, damage: 100, power: p.power * p.heavyMul,
+      }));
+      p.lockMana(3);
+      game.fx.ring(p.x, p.y, 80, '#c8a86a', 40);
+      game.fx.addShake(16);
+      game.fx.text(p.x, p.y - 50, 'EARTHQUAKE', '#d8b878', 20);
       game.audio.cast('earth', true);
+      game.audio.explode();
     },
   },
   {
     id: 'ice', name: 'Ice', icon: '🜄', color: '#7ec8ff',
     primaryName: 'Ice Shard', heavyName: 'Ice Wall',
-    desc: 'Shards slow, and rarely freeze outright; charge to hurl a wall.',
+    desc: 'Shards hit for 30–40, slow, and rarely freeze outright; charge to hurl a wall.',
     cost: 9, heavyCostFrac: 0.7,
 
     primary(p, game) {
       p.castProjectile(game, p.aim, {
-        damage: 11 * p.power, speed: 620, life: 1.25, radius: 6,
+        damage: U.rand(30, 40) * p.power, speed: 620, life: 1.25, radius: 6,
         color: '#a9dcff', knock: 80, trailColor: '#4ea8e0', effect: 'chill',
       });
       game.audio.cast('ice', false);
@@ -469,9 +509,9 @@ const ELEMENTS = [
   },
   {
     id: 'air', name: 'Air', icon: '🜁', color: '#cfe4ff',
-    primaryName: 'Tornado', heavyName: 'Gale',
-    desc: 'Tornadoes fling the weak and shove the rest; charge for a cone blast.',
-    cost: 10, heavyCostFrac: 0.28,
+    primaryName: 'Gust', heavyName: 'Tornado',
+    desc: 'Gusts fling the weak and shove the rest; charge for a roaming tornado — 10 a second to everything it touches.',
+    cost: 10, heavyCostFrac: 0.35,
 
     primary(p, game) {
       p.castProjectile(game, p.aim, {
@@ -480,40 +520,17 @@ const ELEMENTS = [
       });
       game.audio.cast('air', false);
     },
-    /* Update 2.0: the Air heavy is the Mage's panic button. A full-screen
-       tornado that simply deletes anything ordinary caught in it — and
-       leaves you at zero mana AND zero stamina, so it is a genuine
-       all-or-nothing. Elites and bosses take heavy damage instead. */
+    /* Update 3.0: the Air heavy is a tornado instead of the screen-wide
+       Tempest. It sets down where you point and roams, spinning toward the
+       nearest crowd, dealing 10 damage a second to every enemy it touches. */
     heavy(p, game) {
-      const radius = 460 * p.rangeMul;
-      let executed = 0, resisted = 0;
-      for (const e of game.enemyHash.query(p.x, p.y, radius, [])) {
-        if (e.dead || U.dist(p.x, p.y, e.x, e.y) > radius) continue;
-        if (!e.elite && !e.def.boss) {
-          e.takeDamage(e.hp + 9999, game, p.x, p.y, 0, false);
-          executed++;
-        } else {
-          e.takeDamage(90 * p.power * p.heavyMul, game, p.x, p.y, 260, true);
-          e.stun = Math.max(e.stun, 0.7);
-          resisted++;
-        }
-      }
-      // The whole cost, not a fraction of it.
-      p.mana = 0;
-      p.energy = 0;
-      game.tempest(1.35);          // canvas blur/darken while the wind passes
-      game.impactFreeze(0.12);
-      game.fx.ring(p.x, p.y, radius * 0.42, '#e6f0ff', 60);
-      game.fx.ring(p.x, p.y, radius * 0.7, '#9fb8d8', 46);
-      game.fx.spark(p.x, p.y, {
-        count: 90, color: ['#e6f0ff', '#9fb8d8', '#ffffff'],
-        speedMax: 620, lifeMax: 1.1, sizeMax: 5, glow: false,
-      });
-      game.fx.addShake(22);
-      game.fx.text(p.x, p.y - 56, executed ? `${executed} SWEPT AWAY` : 'THE WIND PASSES', '#e6f0ff', 20);
-      if (resisted) game.fx.text(p.x, p.y - 32, `${resisted} held fast`, '#8fa0b8', 13);
+      const tx = game.mouseWorld.x, ty = game.mouseWorld.y;
+      game.zones.push(new Zone('tornado', tx, ty, {
+        radius: 44, life: 8, tickEvery: 1, damage: 10, power: p.power * p.heavyMul,
+      }));
+      game.fx.ring(tx, ty, 40, '#e6f0ff', 26);
+      game.fx.addShake(6);
       game.audio.cast('air', true);
-      game.audio.explode();
     },
   },
 ];

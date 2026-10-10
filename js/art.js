@@ -366,6 +366,166 @@ const Art = {
       Art.eyes(ctx, 0, -s.r * 0.2, 4.2, 3.4, e.lit ? '#ffffff' : '#3a1d0c');
     },
 
+    /* ---------------- Update 3.0 ---------------- */
+
+    cop(ctx, e, s) {
+      // A squad car seen from above, with a light bar that never stops.
+      const r = s.r;
+      const L = r * 2.3, W = r * 1.35;
+      // A car is the one thing that should turn to face where it drives:
+      // undo the dispatcher's mirror and rotate to the real heading.
+      const face = e.atk ? e.atk.angle : e.face;
+      ctx.rotate(s.flip > 0 ? face : Math.PI - face);
+      ctx.fillStyle = 'rgba(0,0,0,.35)';
+      ctx.fillRect(-L / 2 + 3, -W / 2 + 4, L, W);
+      ctx.fillStyle = s.body;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(-L / 2, -W / 2, L, W, 6) : ctx.rect(-L / 2, -W / 2, L, W);
+      ctx.fill();
+      // White doors.
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#e8ecf2';
+      ctx.fillRect(-L * 0.18, -W / 2, L * 0.34, W);
+      // Windscreen and rear window.
+      ctx.fillStyle = '#1a2233';
+      ctx.fillRect(L * 0.12, -W * 0.38, L * 0.14, W * 0.76);
+      ctx.fillRect(-L * 0.34, -W * 0.34, L * 0.1, W * 0.68);
+      // Light bar.
+      const on = Math.floor(s.time * 8) % 2 === 0;
+      ctx.fillStyle = on ? '#ff2b2b' : '#5a1010';
+      ctx.fillRect(-L * 0.04, -W * 0.42, L * 0.08, W * 0.4);
+      ctx.fillStyle = on ? '#1a2a5a' : '#2b6bff';
+      ctx.fillRect(-L * 0.04, W * 0.02, L * 0.08, W * 0.4);
+      ctx.globalAlpha = 0.5;
+      ctx.shadowBlur = 18; ctx.shadowColor = on ? '#ff2b2b' : '#2b6bff';
+      ctx.fillRect(-L * 0.04, -W * 0.42, L * 0.08, W * 0.84);
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      // Headlights, blazing while it revs.
+      ctx.fillStyle = s.pose.tell > 0 ? '#fff6c8' : '#c8c09a';
+      if (s.pose.tell > 0) { ctx.shadowBlur = 16; ctx.shadowColor = '#fff6c8'; }
+      ctx.fillRect(L / 2 - 3, -W * 0.42, 3, W * 0.22);
+      ctx.fillRect(L / 2 - 3, W * 0.2, 3, W * 0.22);
+      ctx.shadowBlur = 0;
+      // Wheels.
+      ctx.fillStyle = '#111';
+      for (const wx of [-L * 0.3, L * 0.28]) for (const wy of [-W / 2 - 2, W / 2 - 2]) ctx.fillRect(wx - 4, wy, 8, 4);
+    },
+
+    hound(ctx, e, s) {
+      const r = s.r;
+      const st = s.gait.cycle * r * 0.4;
+      for (const [lx, ph] of [[-r * 0.6, 1], [-r * 0.2, -1], [r * 0.3, 1], [r * 0.7, -1]]) {
+        Art.limb(ctx, lx, r * 0.2, lx + st * ph, r * 0.95, r * 0.22, s.dark);
+      }
+      Art.blob(ctx, 0, 0, r * 1.05, r * 0.55, s.body);
+      // Ribs showing.
+      ctx.strokeStyle = 'rgba(0,0,0,.3)';
+      ctx.lineWidth = 1.3;
+      for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(i * r * 0.25, -r * 0.4); ctx.lineTo(i * r * 0.25, r * 0.3); ctx.stroke(); }
+      Art.blob(ctx, r * 0.95, -r * 0.3, r * 0.48, r * 0.38, s.body);
+      Art.blob(ctx, r * 1.3, -r * 0.2, r * 0.26, r * 0.18, s.dark);   // snout
+      ctx.fillStyle = s.dark;
+      ctx.beginPath(); ctx.moveTo(r * 0.75, -r * 0.6); ctx.lineTo(r * 0.85, -r * 1.05); ctx.lineTo(r * 1.0, -r * 0.62); ctx.fill();
+      Art.limb(ctx, -r * 1.0, -r * 0.1, -r * 1.5, -r * 0.5 + st * 0.3, r * 0.16, s.dark);   // tail
+      ctx.fillStyle = e.aggro ? '#ff6b52' : '#d8d2c4';
+      ctx.fillRect(r * 1.05, -r * 0.45, 2.6, 2.6);
+    },
+
+    imp(ctx, e, s) {
+      const r = s.r;
+      const flap = Math.sin(s.time * 18) * 0.5;
+      ctx.fillStyle = s.dark;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.2, -r * 0.2);
+        ctx.lineTo(-r * 1.3, side * r * (0.9 + flap));
+        ctx.lineTo(-r * 0.5, side * r * 0.35);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.shadowBlur = 14; ctx.shadowColor = '#ff7a3c';
+      Art.blob(ctx, 0, 0, r * 0.75, r * 0.85, s.body);
+      ctx.shadowBlur = 0;
+      // Horns and a little flame on top.
+      ctx.fillStyle = s.dark;
+      ctx.beginPath(); ctx.moveTo(-r * 0.4, -r * 0.6); ctx.lineTo(-r * 0.55, -r * 1.15); ctx.lineTo(-r * 0.15, -r * 0.75); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(r * 0.4, -r * 0.6); ctx.lineTo(r * 0.55, -r * 1.15); ctx.lineTo(r * 0.15, -r * 0.75); ctx.fill();
+      Art.blob(ctx, 0, -r * 1.05, r * 0.2, r * 0.3 + Math.sin(s.time * 20) * 1.5, '#ffd479');
+      Art.eyes(ctx, r * 0.15, -r * 0.2, 3.2, 3, '#fff1c9');
+    },
+
+    shroom(ctx, e, s) {
+      const r = s.r;
+      // Swells as the puff winds up.
+      const puff = 1 + s.pose.tell * 0.25;
+      Art.blob(ctx, 0, r * 0.45, r * 0.42, r * 0.6, '#e8dcc4');                  // stalk
+      Art.blob(ctx, 0, -r * 0.2, r * 1.1 * puff, r * 0.75 * puff, s.body);       // cap
+      ctx.fillStyle = '#f5d0ea';
+      for (const [dx, dy, rr] of [[-0.5, -0.4, 0.2], [0.3, -0.55, 0.16], [0.55, -0.1, 0.14], [-0.15, -0.05, 0.12]]) {
+        ctx.beginPath(); ctx.arc(dx * r * puff, dy * r * puff, rr * r, 0, Math.PI * 2); ctx.fill();
+      }
+      Art.eyes(ctx, 0, r * 0.3, 3.4, 3, '#3a1030');
+      if (s.pose.tell > 0) {
+        ctx.globalAlpha = s.pose.tell * 0.5;
+        Art.blob(ctx, 0, 0, r * 1.6 * puff, r * 1.2 * puff, 'rgba(200,111,174,.35)');
+        ctx.globalAlpha = 1;
+      }
+    },
+
+    mimic(ctx, e, s) {
+      // A chest — until it opens, and it is all teeth.
+      const r = s.r;
+      const open = e.awake ? 0.35 + s.pose.tell * 0.5 + Math.abs(s.gait.cycle) * 0.15 : 0;
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#6b4a2c';
+      ctx.fillRect(-r, -r * 0.2, r * 2, r * 1.0);                                 // base
+      ctx.fillStyle = '#c0a070';
+      ctx.fillRect(-r, -r * 0.25, r * 2, r * 0.16);
+      ctx.save();
+      ctx.translate(0, -r * 0.2);
+      ctx.rotate(-open);
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#8a6238';
+      ctx.fillRect(-r, -r * 0.6, r * 2, r * 0.6);                                 // lid
+      ctx.fillStyle = '#c0a070';
+      ctx.fillRect(-r * 0.15, -r * 0.3, r * 0.3, r * 0.34);
+      ctx.restore();
+      if (open > 0) {
+        ctx.fillStyle = '#2a0c0c';
+        ctx.fillRect(-r * 0.85, -r * 0.2 - open * r * 0.7, r * 1.7, open * r * 0.7);
+        ctx.fillStyle = '#f0e6d2';
+        for (let i = 0; i < 6; i++) {
+          const tx = -r * 0.8 + i * r * 0.32;
+          ctx.beginPath(); ctx.moveTo(tx, -r * 0.2); ctx.lineTo(tx + r * 0.14, -r * 0.2 - r * 0.28 * open); ctx.lineTo(tx + r * 0.28, -r * 0.2); ctx.fill();
+        }
+        Art.blob(ctx, r * 0.3, -r * 0.2, r * 0.35, r * 0.12, '#c8452f');          // tongue
+        Art.eyes(ctx, 0, -r * 0.2 - open * r * 0.6, 4, 3, '#ffd479');
+      }
+    },
+
+    lancer(ctx, e, s) {
+      const r = s.r;
+      ctx.globalAlpha = 0.85;
+      // Long lance held out front, drawn back on the wind-up.
+      const back = s.pose.tell * r * 0.8;
+      Art.limb(ctx, -r * 0.8 - back, r * 0.1, r * 2.4 - back, r * 0.1, 3, '#cfe0d8');
+      ctx.fillStyle = '#e8fff8';
+      ctx.beginPath();
+      ctx.moveTo(r * 2.4 - back, r * 0.1 - 4); ctx.lineTo(r * 3.0 - back, r * 0.1); ctx.lineTo(r * 2.4 - back, r * 0.1 + 4);
+      ctx.fill();
+      // Ghostly robe with a ragged hem.
+      ctx.fillStyle = s.body;
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.6, -r * 0.7);
+      ctx.lineTo(r * 0.6, -r * 0.7);
+      for (let i = 0; i <= 4; i++) {
+        const hx = r * 0.7 - i * r * 0.35;
+        ctx.lineTo(hx, r * (1.0 + ((i % 2) ? 0.25 : 0) + Math.sin(s.time * 6 + i) * 0.08));
+      }
+      ctx.closePath(); ctx.fill();
+      Art.blob(ctx, 0, -r * 0.95, r * 0.45, r * 0.45, s.dark);
+      ctx.fillStyle = '#e8fff8';
+      ctx.fillRect(-r * 0.3, -r * 1.0, r * 0.6, 2.4);                             // visor slit
+      ctx.globalAlpha = 1;
+    },
+
     companion(ctx, e, s) { Art.enemy._default(ctx, e, s); },
 
     johnspace(ctx, e, s) {

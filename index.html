@@ -43,6 +43,7 @@
       <div class="ability parry" id="ab5"><kbd>SPACE</kbd><span>Parry</span></div>
       <div class="ability slot hidden" id="ab6"><kbd>R</kbd><span id="slotIcon">☠</span><span id="slotName">Thrall</span></div>
       <div class="ability" id="ab4"><kbd>E</kbd><span>Interact</span></div>
+      <div class="ability" id="ab7"><kbd>I</kbd><span>Inventory</span></div>
     </div>
 
     <div id="prompt" class="prompt hidden"></div>
@@ -71,7 +72,7 @@
           <ul>
             <li><b>140</b> Vitality — heavy armour of habit</li>
             <li>Wide arcing swings that hit every foe in reach</li>
-            <li><b>Cleave</b>: charged overhead that stuns and throws</li>
+            <li><b>R</b> swaps <b>Sword</b> and <b>Double Sword</b></li>
             <li><b>Dash</b> with brief invulnerability</li>
             <li>Heals on kill as you press forward</li>
           </ul>
@@ -88,7 +89,7 @@
             <li>Rapid pebbles at any range, ammo refills itself</li>
             <li><b>Piercing Shot</b>: charge to skewer a whole line</li>
             <li><b>Roll</b> with invulnerability and a burst of speed</li>
-            <li>Bonus damage against distant targets</li>
+            <li><b>R</b>: a <b>Hand Grenade</b> for 100–500 a target</li>
           </ul>
           <span class="pick">Take the slingshot</span>
         </button>
@@ -101,7 +102,7 @@
           <ul>
             <li><b>200</b> Vitality — the wall of the deep</li>
             <li>Brace to block: <b>red attacks turn blue</b> and can be parried</li>
-            <li><b>R</b> toggles Heavy Dash and Heavy Slam</li>
+            <li><b>R</b> picks Heavy Dash, Heavy Slam or <b>Ricochet</b></li>
             <li>Upgrades to the <b>Spiky Shield</b> in Sarapolis</li>
             <li>Slowest movement in the game</li>
           </ul>
@@ -130,9 +131,9 @@
           <p>Four elements, eight spells, and never quite enough mana.</p>
           <ul>
             <li><b>82</b> Vitality — the thinnest skin in the deep</li>
-            <li><b>Fire</b> meteors · <b>Earth</b> vines and turrets</li>
+            <li><b>Fire</b> meteors · <b>Earth</b> vines and an <b>Earthquake</b></li>
             <li><b>Ice</b> that slows, and rarely just ends things</li>
-            <li><b>Air</b> that flings the weak and shoves the rest</li>
+            <li><b>Air</b> gusts, and a roaming <b>Tornado</b></li>
             <li><b>R</b> spins the elemental wheel</li>
           </ul>
           <span class="pick">Take the wooden staff</span>
@@ -141,8 +142,46 @@
 
       <div class="seedrow">
         <label>World seed <input id="seedInput" type="text" placeholder="random"></label>
-        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · TAB map · ESC pause</span>
+        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · I inventory · TAB map · ESC pause</span>
       </div>
+    </div>
+  </div>
+  <!-- Sits outside the scrolling title screen so it stays pinned to the corner. -->
+  <div class="credit">Developed by Neil Uaine</div>
+
+  <!-- ============ INVENTORY ============ -->
+  <div id="inventory" class="screen hidden">
+    <div class="modal inv">
+      <div class="inv-head">
+        <button class="inv-arrow" id="invPrev" title="Previous (←)">‹</button>
+        <div class="inv-title">
+          <h2 id="invName">You</h2>
+          <p class="sub" id="invSub"></p>
+        </div>
+        <button class="inv-arrow" id="invNext" title="Companions (→)">›</button>
+      </div>
+      <div class="inv-page" id="invPage"></div>
+      <div class="inv-body">
+        <div class="inv-slots" id="invSlots"></div>
+        <div class="inv-side">
+          <div class="inv-coins">◈ Coins <b id="invCoins">0</b></div>
+          <div class="statgrid" id="invStats"></div>
+        </div>
+      </div>
+      <div class="inv-bag-head">Bag — click an item to put it on whoever is shown</div>
+      <div class="inv-bag" id="invBag"></div>
+      <p class="sub">I or ESC to close · click a worn item to take it off · ‹ › or arrow keys switch character</p>
+    </div>
+  </div>
+
+  <!-- ============ SHOP ============ -->
+  <div id="shop" class="screen hidden">
+    <div class="modal inv">
+      <h2>The Hollow Peddler</h2>
+      <p class="sub">"Everything here was somebody's. Now it can be yours."</p>
+      <div class="inv-coins">◈ Coins <b id="shopCoins">0</b></div>
+      <div class="inv-bag shop-list" id="shopList"></div>
+      <p class="sub">Bought gear goes to your bag — press I to put it on you or a companion · E or ESC to leave</p>
     </div>
   </div>
 
@@ -197,6 +236,7 @@
 <script src="js/spatial.js"></script>
 <script src="js/save.js"></script>
 <script src="js/maps.js"></script>
+<script src="js/items.js"></script>
 <script src="js/dungeon.js"></script>
 <script src="js/art.js"></script>
 <script src="js/shrines.js"></script>

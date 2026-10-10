@@ -372,7 +372,7 @@ class Dungeon {
       for (let i = 0; i < count; i++) {
         const type = r.pick(table);
         const spot = this.spotIn(room, 2);
-        const elite = r.chance(0.05 + room.tier * 0.025);
+        const elite = r.chance((0.05 + room.tier * 0.025) * (this.map.difficulty ? this.map.difficulty.elite : 1));
         room.spawns.push({ type, x: spot.x, y: spot.y, elite, threat: room.threat });
       }
 
@@ -390,6 +390,28 @@ class Dungeon {
     this.placeRedShrines();
     this.placeUpdate2Shrines();
     this.placeCages();
+    this.placeMerchants();
+  }
+
+  /* Update 3.0: the Hollow Peddler. One waits in the entrance hall so the
+     shop is never more than a walk back, and one or two more are tucked into
+     the deeper regions. Placed last so it never shifts earlier generation. */
+  placeMerchants() {
+    const r = this.rng;
+    const spots = [this.start];
+    const mid = this.rooms.filter(room => room.kind === 'combat' && room.tier >= 2 && room.tier <= 3
+      && !room.hasRedShrine && !room.hasShrine2 && !room.hasCage);
+    if (mid.length) spots.push(mid[r.int(0, mid.length)]);
+    const deep = this.rooms.filter(room => room.kind === 'combat' && room.tier >= 4
+      && !room.hasRedShrine && !room.hasShrine2 && !room.hasCage);
+    if (deep.length) spots.push(deep[r.int(0, deep.length)]);
+    spots.forEach((room, i) => {
+      room.hasMerchant = true;
+      this.props.push({
+        type: 'merchant', ...this.spotIn(room, room === this.start ? 3 : 1), room, used: false,
+        stock: Shop.rollStock((this.seed ^ Math.imul(i + 1, 0x9e3779b1)) >>> 0, this.map.number),
+      });
+    });
   }
 
   /* Two caged companions per map, and John Space out in the deep regions

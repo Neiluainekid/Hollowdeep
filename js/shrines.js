@@ -142,6 +142,7 @@ const Shrines = {
       case 'chest': return { icon: '▮', color: '#e2b34a', label: 'chest' };
       case 'fountain': return { icon: '≈', color: '#4fd0a8', label: 'fountain' };
       case 'cage': return { icon: '⌗', color: '#c8a86a', label: 'caged companion' };
+      case 'merchant': return { icon: '$', color: '#ffd479', label: 'merchant' };
       default: return { icon: '•', color: '#9a9280', label: prop.type };
     }
   },

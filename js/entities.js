@@ -3,18 +3,43 @@
 
 /* ---------------- shared tile collision ---------------- */
 
+/* Update 3.0 fix: only tiles on the *leading* side of the body can stop it.
+   The old loop resolved against every solid tile in the bounding box, so a
+   body that started overlapping a wall behind it (a shrine guardian dropped
+   against the rock, say) was "pushed out" to the far side of that wall on its
+   first step — which is exactly the no-clip players saw on red-shrine spawns. */
 function resolveAxis(e, dun, axis, delta) {
   if (delta === 0) return;
   const r = e.radius;
   const minTx = Math.floor((e.x - r) / TILE), maxTx = Math.floor((e.x + r) / TILE);
   const minTy = Math.floor((e.y - r) / TILE), maxTy = Math.floor((e.y + r) / TILE);
+  // Judge "ahead" from where the centre was before this step, so a fast dash
+  // that carries the centre into a thin wall is still caught by it.
+  const px = axis === 'x' ? e.x - delta : e.x;
+  const py = axis === 'y' ? e.y - delta : e.y;
   for (let ty = minTy; ty <= maxTy; ty++) {
     for (let tx = minTx; tx <= maxTx; tx++) {
       if (!dun.isSolidTile(tx, ty)) continue;
-      if (axis === 'x') e.x = delta > 0 ? tx * TILE - r - 0.01 : (tx + 1) * TILE + r + 0.01;
-      else e.y = delta > 0 ? ty * TILE - r - 0.01 : (ty + 1) * TILE + r + 0.01;
+      if (axis === 'x') {
+        // A tile whose near face was behind our centre is not in our way.
+        if (delta > 0 ? tx * TILE < px : (tx + 1) * TILE > px) continue;
+        e.x = delta > 0 ? tx * TILE - r - 0.01 : (tx + 1) * TILE + r + 0.01;
+      } else {
+        if (delta > 0 ? ty * TILE < py : (ty + 1) * TILE > py) continue;
+        e.y = delta > 0 ? ty * TILE - r - 0.01 : (ty + 1) * TILE + r + 0.01;
+      }
     }
   }
+}
+
+/* True when a body of radius `r` centred at (x, y) overlaps no solid tile. */
+function bodyFits(dun, x, y, r) {
+  const minTx = Math.floor((x - r) / TILE), maxTx = Math.floor((x + r) / TILE);
+  const minTy = Math.floor((y - r) / TILE), maxTy = Math.floor((y + r) / TILE);
+  for (let ty = minTy; ty <= maxTy; ty++) {
+    for (let tx = minTx; tx <= maxTx; tx++) if (dun.isSolidTile(tx, ty)) return false;
+  }
+  return true;
 }
 
 function moveWithCollision(e, dx, dy, dun) {
@@ -91,7 +116,7 @@ class Player {
     this.dashT = 0;
     this.dashDir = 0;
     this.dashHit = new Set();
-    this.shieldChargeDmg = 0;
+    this.dashStrikeDmg = 0;
     this.swing = null;
     this.bob = 0;
     this.dead = false;
@@ -109,7 +134,99 @@ class Player {
     this.wardedByMinions = false;
     this._noMana = 0;
 
+    /* ---- Update 3.0: gear ----
+       Accessories write into these; the getters below fold them in. */
+    this.bag = [];                       // accessory ids, unequipped
+    this.equip = Gear.blankEquip();
+    this.equipDef = 0;
+    this.equipSpeed = 0;
+    this.equipDmg = 0;
+    this.critBonus = 0;
+    this.hpRegen = 0;
+    this.xpMul = 1;
+    this.parryMul = 1;
+    this.thorns = 0;
+    this.luck = 0;
+    this.jaronaNecklace = false;
+    this.curse = null;                   // Cursed Totem state
+    this.manaLockT = 0;                  // mana pinned at zero (Bloat, Earthquake)
+    this.hpCap = null;                   // Bloat: health held at 65% for 5s
+    this.dashLockT = 0;                  // Double Sword slice: dash disabled
+    this.roll = null;                    // Tanker ricochet roll
+    this.dashStrikeDmg = 0;              // heavy dashes that cut a lane
+
     this._q = [];   // reusable scratch buffer for spatial queries
+  }
+
+  /* ---------------- Update 3.0: timed debuffs ---------------- */
+
+  // The Cursed Totem: half your HP, mana and stamina, for as long as you wear
+  // it and four seconds after.
+  applyCurse() {
+    if (this.curse) { this.curse.linger = -1; return; }   // re-worn mid-linger
+    const c = {
+      hp: Math.round(this.maxHp * 0.5), mana: this.maxMana * 0.5,
+      en: this.maxEnergy * 0.5, linger: -1,
+    };
+    this.maxHp -= c.hp; this.maxMana -= c.mana; this.maxEnergy -= c.en;
+    this.hp = Math.min(this.hp, this.maxHp);
+    this.mana = Math.min(this.mana, this.maxMana);
+    this.energy = Math.min(this.energy, this.maxEnergy);
+    this.curse = c;
+  }
+
+  liftCurse() { if (this.curse) this.curse.linger = 4; }
+
+  // Health pinned to a fraction of max; whatever was trimmed comes back after.
+  capHp(frac, secs) {
+    if (this.hpCap) { this.hpCap.t = Math.max(this.hpCap.t, secs); return; }
+    const cap = this.maxHp * frac;
+    const bank = Math.max(0, this.hp - cap);
+    this.hp -= bank;
+    this.hpCap = { t: secs, frac, bank };
+  }
+
+  lockMana(secs) {
+    if (!this.usesMana) return;
+    this.mana = 0;
+    this.manaLockT = Math.max(this.manaLockT, secs);
+  }
+
+  updateTimedEffects(dt, game) {
+    if (this.curse && this.curse.linger > 0) {
+      this.curse.linger -= dt;
+      if (this.curse.linger <= 0) {
+        const c = this.curse;
+        this.maxHp += c.hp; this.maxMana += c.mana; this.maxEnergy += c.en;
+        this.curse = null;
+        game.fx.text(this.x, this.y - 40, 'the curse lifts', '#ffd479', 15);
+      }
+    }
+    if (this.hpCap) {
+      this.hpCap.t -= dt;
+      this.hp = Math.min(this.hp, this.maxHp * this.hpCap.frac);
+      if (this.hpCap.t <= 0) {
+        const back = this.heal(this.hpCap.bank);
+        this.hpCap = null;
+        if (back > 0) game.fx.text(this.x, this.y - 34, `+${Math.round(back)}`, '#6fbf73', 14);
+      }
+    }
+    if (this.manaLockT > 0) { this.manaLockT -= dt; this.mana = 0; }
+    this.dashLockT = Math.max(0, this.dashLockT - dt);
+    if (this.hpRegen > 0) this.heal(this.hpRegen * dt);
+  }
+
+  get speedMul() {
+    const mode = this.slotDef && this.slotDef.speedMul ? this.slotDef.speedMul : 1;
+    return this.moveMul * (1 + this.equipSpeed) * mode;
+  }
+
+  // Loadout modes can carry a flat health bonus (the Double Sword's +10).
+  applySlotBonus(def, sign) {
+    if (!def || !def.hpBonus) return;
+    this.maxHp += def.hpBonus * sign;
+    if (sign > 0) this.hp += def.hpBonus;
+    this.hp = Math.min(this.hp, this.maxHp);
   }
 
   isParrying() { return this.parryT > 0; }
@@ -120,7 +237,7 @@ class Player {
   /* ---------------- caster support ---------------- */
 
   spendMana(n) {
-    if (this.mana < n) {
+    if (this.mana < n || this.manaLockT > 0) {
       this._noMana = 0.5;
       return false;
     }
@@ -133,13 +250,18 @@ class Player {
 
   cycleSlot(dir = 1) {
     if (!this.loadout) return null;
-    this.slot = Seq.wrapTo(this.loadout.options, this.slot + dir);
-    return this.slotDef;
+    return this.setSlot(Seq.wrapTo(this.loadout.options, this.slot + dir));
   }
 
   setSlot(n) {
     if (!this.loadout) return null;
+    const before = this.slotDef;
     this.slot = Seq.clampTo(this.loadout.options, n);
+    if (this.slotDef !== before) {
+      this.applySlotBonus(before, -1);
+      this.applySlotBonus(this.slotDef, +1);
+      this.roll = null;
+    }
     return this.slotDef;
   }
 
@@ -185,6 +307,15 @@ class Player {
     }
     if (!this.spendMana(def.cost * this.costMul)) return;
 
+    /* Update 3.0: the Bloat's blast is huge now, and it costs you for it —
+       every drop of mana gone for 5 seconds, and your health held at 65%. */
+    if (def.id === 'bomber') {
+      this.lockMana(5);
+      this.capHp(0.65, 5);
+      game.fx.text(this.x, this.y - 44, 'THE BLOAT FEEDS ON YOU', '#c4e86b', 14);
+      game.fx.addFlash('#5c6b2a', 0.25);
+    }
+
     this.minionCds[def.id] = def.cooldown * this.summonCdMul;
     const a = this.aim + U.rand(-0.5, 0.5);
     const m = new Minion(def.id, this.x + Math.cos(a) * 34, this.y + Math.sin(a) * 34, this);
@@ -198,8 +329,9 @@ class Player {
 
   tryParry(game) {
     if (this.parryCd > 0 || this.parryT > 0 || this.dashT > 0) return;
-    this.parryT = PARRY.window;
-    this.parryCd = PARRY.cdWhiff + PARRY.window;
+    this.parryT = PARRY.window * this.parryMul;
+    this.parryCd = PARRY.cdWhiff + this.parryT;
+    this.deflectPebbles(game);
     this.facing = this.aim;
     game.audio.parryOpen();
     game.fx.spark(this.x + Math.cos(this.aim) * 20, this.y + Math.sin(this.aim) * 20, {
@@ -228,18 +360,37 @@ class Player {
       game.fx.text(this.x, this.y - 52, 'BLOCKED', '#8fd4ff', 13);
     }
 
+    /* Update 3.0: against a boss (and John Space's trial) only HEAVY attacks
+       can be parried. Their light attacks pass straight through a parry —
+       you dodge those, and save the parry for the gold telegraph. */
+    const src = opts.source;
+    const heavyOnly = !!(src && src.def && (src.def.boss || src.trial));
+
     if (this.isParrying()) {
-      if (kind === 'blue') {
+      const parryable = kind === 'heavy' || (kind === 'blue' && !heavyOnly);
+      if (parryable) {
         game.onParry(this, opts);
         return 'parry';
       }
-      // Red is unblockable. Reading it wrong costs you the window and the hit.
       this.parryT = 0;
-      this.parryCd = PARRY.cdRedFail;
-      game.fx.text(this.x, this.y - 46, 'UNBLOCKABLE', '#ff6b52', 15);
+      if (kind === 'blue') {
+        // A light attack from a boss: the parry simply does not catch it.
+        this.parryCd = PARRY.cdWhiff;
+        game.fx.text(this.x, this.y - 46, 'TOO LIGHT — PARRY HEAVIES', '#ffd479', 13);
+      } else {
+        // Red is unblockable. Reading it wrong costs you the window and the hit.
+        this.parryCd = PARRY.cdRedFail;
+        game.fx.text(this.x, this.y - 46, 'UNBLOCKABLE', '#ff6b52', 15);
+      }
     }
 
     this.takeDamage(amount, game, opts.x, opts.y);
+
+    // Thornwreath. Never on John Space while he is still deciding about you —
+    // thorns are you hitting him back, and that ends the arrangement.
+    if (this.thorns > 0 && src && src.takeDamage && !src.dead && !src.neutral && !src.trial) {
+      src.takeDamage(this.thorns, game, this.x, this.y, 0, false);
+    }
     return 'hit';
   }
 
@@ -257,6 +408,8 @@ class Player {
       hp: this.hp, energy: this.energy, mana: this.mana,
       slot: this.slot,
       x: this.x, y: this.y,
+      bag: this.bag.slice(),
+      equip: { ...this.equip },
     };
   }
 
@@ -277,18 +430,28 @@ class Player {
       p.perksTaken.push(id);
     }
 
+    // Gear is replayed exactly like perks: by id, through the same apply.
+    p.bag = (data.bag || []).filter(id => Gear.get(id));
+    for (const [slot, id] of Object.entries(data.equip || {})) {
+      if (!id || !Gear.get(id) || Gear.slotOf(id) !== slot) continue;
+      p.bag.push(id);
+      Gear.equip(p, p, id);
+    }
+    if (p.loadout) p.setSlot(data.slot || Seq.FIRST);
+
     p.xp = data.xp || 0;
     p.xpNext = xpNeeded(p.level);
     p.hp = U.clamp(data.hp ?? p.maxHp, 1, p.maxHp);
     p.energy = U.clamp(data.energy ?? p.maxEnergy, 0, p.maxEnergy);
     p.mana = U.clamp(data.mana ?? p.maxMana, 0, p.maxMana);
-    if (p.loadout) p.slot = Seq.clampTo(p.loadout.options, data.slot || Seq.FIRST);
     return p;
   }
 
   get tier() { return Seq.get(this.cls.tiers, Seq.clampTo(this.cls.tiers, this.weaponTier)); }
   get weaponName() { return this.tier.weapon; }
-  get power() { return this.dmgMul * (1 + (this.weaponLevel - 1) * 0.16) * this.tier.dmgMul; }
+  get power() {
+    return this.dmgMul * (1 + (this.weaponLevel - 1) * 0.16) * this.tier.dmgMul * (1 + this.equipDmg);
+  }
   get cooldownScale() { return this.cdMul * this.tier.cdMul; }
 
   // Promote to the weapon tier a given map hands out (never demote).
@@ -316,7 +479,7 @@ class Player {
   }
 
   addXp(n, game) {
-    this.xp += n;
+    this.xp += n * this.xpMul;
     while (this.xp >= this.xpNext) {
       this.xp -= this.xpNext;
       this.level++;
@@ -333,8 +496,11 @@ class Player {
     if (this.wardedByMinions && game.minions.some(m => !m.dead)) dr = 1 - (1 - dr) * 0.86;
     const stanceDr = this.slotDef && this.slotDef.dr ? this.slotDef.dr : 0;
     if (stanceDr) dr = 1 - (1 - dr) * (1 - stanceDr);
+    if (this.equipDef) dr = 1 - (1 - dr) * (1 - U.clamp(this.equipDef, 0, 0.6));
     const dmg = Math.max(1, Math.round(n * (1 - dr)));
     this.hp -= dmg;
+    // Getting hit knocks a Tanker out of a ricochet roll.
+    if (this.roll) this.endRoll(game, 'interrupted');
     this.iframes = 0.45;
     this.hurtFlash = 0.35;
     game.fx.addShake(4 + dmg * 0.24);
@@ -363,7 +529,10 @@ class Player {
     this.parryCd = Math.max(0, this.parryCd - dt);
     this.parryFlash = Math.max(0, this.parryFlash - dt);
     this._noMana = Math.max(0, this._noMana - dt);
-    if (this.usesMana) this.mana = Math.min(this.maxMana, this.mana + this.cls.manaRegen * this.regenMul * dt);
+    this.updateTimedEffects(dt, game);
+    if (this.usesMana && this.manaLockT <= 0) {
+      this.mana = Math.min(this.maxMana, this.mana + this.cls.manaRegen * this.regenMul * dt);
+    }
     for (const k in this.minionCds) this.minionCds[k] = Math.max(0, this.minionCds[k] - dt);
     this.energy = Math.min(this.maxEnergy, this.energy + this.cls.energyRegen * this.regenMul * dt);
 
@@ -375,7 +544,9 @@ class Player {
     const len = Math.hypot(ix, iy);
     if (len > 0) { ix /= len; iy /= len; this.facing = Math.atan2(iy, ix); }
 
-    if (this.dashT > 0) {
+    if (this.roll) {
+      this.updateRoll(dt, game);
+    } else if (this.dashT > 0) {
       this.dashT = Math.max(0, this.dashT - dt);
       // Guard the fractional power: a negative base here yields NaN and would
       // poison the player's position for the rest of the run.
@@ -387,9 +558,10 @@ class Player {
         count: 2, color: this.cls.dashColors,
         speedMin: 5, speedMax: 40, lifeMin: 0.15, lifeMax: 0.32, sizeMax: 3,
       });
-      if (this.dashDamage > 0 || this.shieldChargeDmg > 0) this.dashStrike(game);
+      if (this.dashDamage > 0 || this.dashStrikeDmg > 0) this.dashStrike(game);
+      if (this.cls.id === 'ranger') this.deflectPebbles(game);
     } else {
-      let speed = this.cls.speed * this.moveMul;
+      let speed = this.cls.speed * this.speedMul;
       if (game.dungeon.isWaterAt(this.x, this.y)) speed *= 0.62;
       if (this.charging) speed *= 0.5;
       if (this.swing && this.swing.t < this.swing.wind + 0.06) speed *= 0.45;
@@ -398,8 +570,8 @@ class Player {
       this.vy = U.damp(this.vy, target.y, 0.35, dt);
     }
 
-    moveWithCollision(this, this.vx * dt, this.vy * dt, game.dungeon);
-    if (len > 0 || this.dashT > 0) this.bob += dt * (this.dashT > 0 ? 22 : 11);
+    if (!this.roll) moveWithCollision(this, this.vx * dt, this.vy * dt, game.dungeon);
+    if (len > 0 || this.dashT > 0 || this.roll) this.bob += dt * (this.dashT > 0 || this.roll ? 22 : 11);
 
     // --- parry ---
     if (input.parry || input.parryPressed) {
@@ -413,7 +585,9 @@ class Player {
     if (input.dash) {
       input.dash = false;   // consume the press even if it can't fire yet
       const cost = mob.cost * this.mobCostMul;
-      if (this.mobCd <= 0 && this.dashT <= 0 && this.energy >= cost) {
+      if (this.dashLockT > 0) {
+        game.fx.text(this.x, this.y - 30, `dash locked ${this.dashLockT.toFixed(1)}s`, '#8fa0b8', 12);
+      } else if (this.mobCd <= 0 && this.dashT <= 0 && !this.roll && this.energy >= cost) {
         this.energy -= cost;
         this.dashT = mob.time;
         this.dashDir = len > 0 ? Math.atan2(iy, ix) : this.aim;
@@ -425,6 +599,14 @@ class Player {
     }
 
     // --- attacks ---
+    // Mid-roll, M1 is the ricochet timing button, not an attack.
+    if (this.roll) {
+      if (input.lPressed) this.rollPress(game);
+      input.lPressed = false;
+      input.rPressed = false;
+      if (this.swing) { this.swing.t += dt; if (this.swing.t >= this.swing.dur) this.swing = null; }
+      return;
+    }
     if ((input.mouseR || input.rPressed) && !this.charging && this.attackCd <= 0 && this.dashT <= 0) {
       this.charging = true;
       this.chargeT = 0;
@@ -503,7 +685,7 @@ class Player {
       s.hit.add(e);
       let dmg = s.damage;
       if (this.executioner > 0 && e.hp / e.maxHp < 0.33) dmg *= 1 + this.executioner;
-      const crit = U.chance(0.12);
+      const crit = U.chance(0.12 + this.critBonus);
       if (crit) dmg *= 1.7;
       e.takeDamage(dmg, game, this.x, this.y, s.knock, crit);
       if (s.stun > 0) e.stun = Math.max(e.stun, s.stun);
@@ -515,7 +697,7 @@ class Player {
 
   dashStrike(game) {
     // A Tanker's Heavy Dash trades on the shield, not on a perk.
-    const shield = this.shieldChargeDmg || 0;
+    const shield = this.dashStrikeDmg || 0;
     const dmg = shield > 0 ? shield : this.dashDamage * this.power;
     for (const e of game.enemyHash.query(this.x, this.y, this.radius + 48, this._q)) {
       if (e.dead || this.dashHit.has(e)) continue;
@@ -526,7 +708,180 @@ class Player {
       if (shield > 0) { game.impactFreeze(0.05); game.fx.addShake(8); }
       else game.fx.addShake(4);
     }
-    if (shield > 0 && this.dashT <= 0) this.shieldChargeDmg = 0;
+    if (shield > 0 && this.dashT <= 0) this.dashStrikeDmg = 0;
+  }
+
+  /* ---------------- Update 3.0: Tanker ricochet roll ----------------
+     The heavy launches a rolling dash. As you close on an enemy or a wall the
+     ring around you turns GREEN: press M1 and the impact becomes a blue
+     shockwave that bounces you off to keep rolling. Press M1 when it is not
+     green and the ring goes YELLOW and costs 50 stamina. Press nothing and
+     you just bump into whatever you hit, and the roll ends. */
+
+  startRoll(game, power) {
+    this.roll = {
+      dir: this.aim, speed: 520, seg: 0, chain: 0,
+      window: false, queued: false, missed: false, flash: 0,
+      dmg: 34 * power * this.power * this.heavyMul,
+      wave: 46 * power * this.power * this.heavyMul,
+    };
+    this.charging = false;
+    game.fx.ring(this.x, this.y, 22, '#4fd0a8', 18);
+    game.audio.swordSwing(true);
+  }
+
+  endRoll(game, why) {
+    if (!this.roll) return;
+    if (why === 'interrupted') game.fx.text(this.x, this.y - 34, 'ROLL BROKEN', '#8fa0b8', 13);
+    this.roll = null;
+    this.vx *= 0.3; this.vy *= 0.3;
+  }
+
+  rollPress(game) {
+    const r = this.roll;
+    // Ignore the press that lands a beat after a perfect bounce: that is a
+    // player following through, not a player mistiming.
+    if (!r || r.queued || r.grace > 0) return;
+    if (r.window && !r.missed) {
+      r.queued = true;
+    } else {
+      r.missed = true;
+      this.energy = Math.max(0, this.energy - 50);
+      game.fx.text(this.x, this.y - 36, 'MISSED  -50', '#ffd479', 14);
+      game.audio.blip(180, 0.12, 0.08, 'sawtooth');
+    }
+  }
+
+  updateRoll(dt, game) {
+    const r = this.roll;
+    const dun = game.dungeon;
+    r.seg += dt;
+    r.flash = Math.max(0, r.flash - dt);
+    r.grace = Math.max(0, (r.grace || 0) - dt);
+    const cos = Math.cos(r.dir), sin = Math.sin(r.dir);
+
+    // Look ahead for something to hit: that is when the window is open.
+    const look = 58;
+    let wallAhead = false;
+    for (let s = this.radius; s <= this.radius + look; s += 8) {
+      if (dun.isSolidAt(this.x + cos * s, this.y + sin * s)) { wallAhead = true; break; }
+    }
+    let foe = null;
+    for (const e of game.enemyHash.query(this.x, this.y, this.radius + look + 50, this._q)) {
+      if (e.dead) continue;
+      const gap = U.dist(this.x, this.y, e.x, e.y) - e.radius - this.radius;
+      if (gap > look) continue;
+      if (Math.abs(U.angleDiff(r.dir, U.angle(this.x, this.y, e.x, e.y))) > 0.75) continue;
+      if (!foe || gap < foe.gap) foe = { e, gap };
+    }
+    r.window = wallAhead || !!foe;
+
+    // Roll.
+    const want = r.speed * dt;
+    const ox = this.x, oy = this.y;
+    this.vx = cos * r.speed; this.vy = sin * r.speed;
+    moveWithCollision(this, cos * want, sin * want, dun);
+    const blockedX = Math.abs((this.x - ox) - cos * want) > 0.5;
+    const blockedY = Math.abs((this.y - oy) - sin * want) > 0.5;
+    if (Math.random() < dt * 30) {
+      game.fx.spark(this.x, this.y, {
+        count: 2, color: r.missed ? ['#ffd479'] : ['#8fa8c8', '#dfe9f5'],
+        speedMax: 60, lifeMax: 0.3, sizeMax: 3,
+      });
+    }
+
+    const touching = foe && foe.gap <= 3 ? foe.e : null;
+    if (!touching && !blockedX && !blockedY) {
+      if (r.seg > 1.7) this.endRoll(game, 'spent');   // rolled into open air
+      return;
+    }
+
+    // Contact. Whatever we hit takes the roll either way.
+    if (touching) {
+      touching.takeDamage(r.dmg, game, this.x, this.y, 420, false);
+      touching.stun = Math.max(touching.stun, 0.5);
+    }
+
+    if (!r.queued) {
+      game.fx.addShake(6);
+      game.audio.impact(true);
+      this.endRoll(game, 'bump');
+      return;
+    }
+
+    // Perfect: a blue shockwave, and off we go again.
+    r.chain++;
+    r.queued = false;
+    r.missed = false;
+    r.window = false;
+    r.grace = 0.18;
+    r.seg = 0;
+    r.flash = 0.3;
+    r.speed = Math.min(860, r.speed * 1.07);
+    for (const e of game.enemyHash.query(this.x, this.y, 96, [])) {
+      if (e.dead || U.dist(this.x, this.y, e.x, e.y) > 96 + e.radius) continue;
+      e.takeDamage(r.wave, game, this.x, this.y, 520, false);
+      e.stun = Math.max(e.stun, 0.6);
+    }
+    game.fx.ring(this.x, this.y, 52, '#4fa8ff', 30);
+    game.fx.spark(this.x, this.y, {
+      count: 22, color: ['#8fd4ff', '#ffffff', '#4fa8ff'], speedMax: 320, lifeMax: 0.5, sizeMax: 4,
+    });
+    game.fx.text(this.x, this.y - 40, r.chain > 1 ? `RICOCHET x${r.chain}` : 'RICOCHET', '#8fd4ff', 16);
+    game.fx.addShake(9);
+    game.impactFreeze(0.05);
+    game.audio.parryHit();
+    this.iframes = Math.max(this.iframes, 0.18);
+
+    if (touching) {
+      // Off the body, and toward the next victim if there is one.
+      const next = game.enemyHash.nearest(this.x, this.y, 320,
+        o => !o.dead && o !== touching && game.dungeon.lineOfSight(this.x, this.y, o.x, o.y));
+      r.dir = next ? U.angle(this.x, this.y, next.x, next.y)
+        : U.angle(touching.x, touching.y, this.x, this.y);
+    } else {
+      // Off the wall: reflect across whichever face stopped us.
+      if (blockedX) r.dir = Math.PI - r.dir;
+      if (blockedY) r.dir = -r.dir;
+    }
+  }
+
+  /* ---------------- Update 3.0: slingshot deflect ----------------
+     A pebble carrying the Ricochet buff can be caught again: dash into it
+     (or open a parry next to it) and it is sent back out along your aim,
+     much faster and harder. One deflect per pebble. */
+  deflectPebbles(game) {
+    if (this.cls.id !== 'ranger') return;
+    for (const pr of game.projectiles) {
+      if (pr.dead || pr.owner !== 'player' || !pr.sling || pr.deflected) continue;
+      if (pr.ricochet <= 0 && !pr.bounced) continue;
+      if (pr.age < 0.12) continue;
+      if (U.dist(this.x, this.y, pr.x, pr.y) > this.radius + pr.radius + 26) continue;
+      const sp = Math.hypot(pr.vx, pr.vy) * 1.9;
+      pr.vx = Math.cos(this.aim) * sp;
+      pr.vy = Math.sin(this.aim) * sp;
+      pr.damage *= 1.6;
+      pr.radius += 2;
+      pr.life = Math.max(pr.life, 1.1);
+      pr.hits.clear();
+      pr.deflected = true;
+      pr.color = '#ffd479';
+      game.fx.ring(pr.x, pr.y, 18, '#ffd479', 14);
+      game.fx.text(pr.x, pr.y - 18, 'DEFLECT', '#ffd479', 14);
+      game.audio.parryHit();
+    }
+  }
+
+  // Double Sword heavy: carve straight through a line of enemies.
+  sliceThrough(game, power) {
+    this.dashT = 0.3;
+    this.dashDir = this.aim;
+    this.iframes = Math.max(this.iframes, 0.32);
+    this.dashHit.clear();
+    this.dashStrikeDmg = 58 * power * this.power * this.heavyMul;
+    this.dashLockT = 3;
+    game.fx.ring(this.x, this.y, 26, '#ffe6b0', 20);
+    game.fx.addShake(7);
   }
 
   fireProjectile(game, angle, cfg) {
@@ -542,6 +897,7 @@ class Player {
       pierce: cfg.pierce,
       heavy: cfg.heavy,
       pierceFalloff: cfg.pierceFalloff || null,
+      sling: !!cfg.sling,
       ricochet: cfg.pierce ? 0 : this.ricochet,
       owner: 'player',
       color: cfg.color || (cfg.heavy ? '#ffffff' : '#cbd8f0'),
@@ -581,6 +937,7 @@ class Projectile {
 
   update(dt, game) {
     this.life -= dt;
+    this.age = (this.age || 0) + dt;
     if (this.life <= 0) { this.dead = true; return; }
 
     if (this.homing > 0 && this.owner === 'enemy' && !game.player.dead) {
@@ -598,6 +955,23 @@ class Projectile {
     this.y += this.vy * dt;
 
     if (game.dungeon.isSolidAt(this.x, this.y)) {
+      /* Update 3.0: a Ricochet pebble also kicks off walls, spending one
+         bounce — which is what brings it back within reach of a deflect. */
+      if (this.sling && this.owner === 'player' && this.ricochet > 0) {
+        const ox = this.x - this.vx * dt, oy = this.y - this.vy * dt;
+        if (game.dungeon.isSolidAt(this.x, oy)) this.vx = -this.vx;
+        if (game.dungeon.isSolidAt(ox, this.y)) this.vy = -this.vy;
+        if (!game.dungeon.isSolidAt(this.x, oy) && !game.dungeon.isSolidAt(ox, this.y)) {
+          this.vx = -this.vx; this.vy = -this.vy;
+        }
+        this.x = ox; this.y = oy;
+        this.ricochet--;
+        this.bounced = true;
+        this.hits.clear();
+        this.life = Math.max(this.life, 0.7);
+        game.fx.spark(this.x, this.y, { count: 5, color: '#a9c6ff', speedMax: 110, lifeMax: 0.22 });
+        return;
+      }
       game.fx.spark(this.x, this.y, {
         count: this.heavy ? 12 : 5, color: [this.color, '#8a8fa0'],
         speedMax: 130, lifeMax: 0.3, sizeMax: 3,
@@ -617,7 +991,7 @@ class Projectile {
           const d = U.dist(this.origin.x, this.origin.y, this.x, this.y);
           dmg *= 1 + this.falloff * U.clamp(d / this.falloffRange, 0, 1);
         }
-        const crit = U.chance(0.1);
+        const crit = U.chance(0.1 + game.player.critBonus);
         if (crit) dmg *= 1.7;
         e.takeDamage(dmg, game, this.x, this.y, this.knock, crit);
         game.audio.impact(!!this.heavy);
@@ -635,6 +1009,7 @@ class Projectile {
           const next = game.enemyHash.nearest(this.x, this.y, 280, o => !o.dead && !this.hits.has(o));
           if (next) {
             this.ricochet--;
+            this.bounced = true;
             const a = U.angle(this.x, this.y, next.x, next.y);
             const sp = Math.hypot(this.vx, this.vy);
             this.vx = Math.cos(a) * sp; this.vy = Math.sin(a) * sp;
@@ -893,9 +1268,92 @@ const ENEMY_TYPES = {
     attacks: [],
   },
 
+  /* ---------------- Update 3.0 bestiary ---------------- */
+
+  /* Officer on patrol. Revs, lines up a lane, and floors it — the headlight
+     lane is drawn for the whole long wind-up and the car cannot steer once
+     it commits, so a single sidestep beats it. Hit a wall and it crashes. */
+  cop: {
+    name: 'Cop Cruiser', hp: 96, speed: 84, radius: 20, xp: 22, gold: 16,
+    ai: 'cop', color: '#2e4f9a', dark: '#121a33', vehicle: true,
+    attacks: [
+      { id: 'runover', kind: 'red', shape: 'charge', range: 560, minRange: 110,
+        wind: 1.25, active: 0.9, recover: 1.0, damage: 30, cd: 3.6,
+        chargeSpeed: 660, lockAim: true, lane: true, reach: 594 },
+    ],
+  },
+  hound: {
+    name: 'Grave Hound', hp: 30, speed: 150, radius: 11, xp: 9, gold: 4,
+    ai: 'chase', color: '#8a7f74', dark: '#3a332c',
+    attacks: [
+      { id: 'bite', kind: 'blue', shape: 'melee', range: 70, reach: 44, arc: 1.6,
+        wind: 0.32, active: 0.1, recover: 0.32, damage: 8, cd: 1.0, lunge: 360 },
+      { id: 'pounce', kind: 'blue', shape: 'melee', range: 150, minRange: 70, reach: 46, arc: 1.4,
+        wind: 0.5, active: 0.22, recover: 0.5, damage: 11, cd: 3.4, lunge: 560 },
+    ],
+  },
+  imp: {
+    name: 'Ember Imp', hp: 34, speed: 108, radius: 10, xp: 13, gold: 7,
+    ai: 'ranged', color: '#ff7a3c', dark: '#5c200c', flying: true,
+    attacks: [
+      // A fan of three: parry the one coming at you, ignore the outriders.
+      { id: 'embers', kind: 'blue', shape: 'shot', range: 430,
+        wind: 0.5, active: 0.06, recover: 0.45, damage: 9, cd: 2.1, count: 3, spread: 0.32,
+        shot: { speed: 330, radius: 5, color: '#ffb347' } },
+    ],
+  },
+  shroom: {
+    name: 'Spore Puffer', hp: 64, speed: 30, radius: 15, xp: 16, gold: 8,
+    ai: 'chase', color: '#c86fae', dark: '#4f2344',
+    attacks: [
+      // A ring of spores around itself, and the floor stays poisoned.
+      { id: 'puff', kind: 'red', shape: 'nova', range: 104, reach: 96, arc: Math.PI * 2,
+        wind: 0.85, active: 0.1, recover: 0.8, damage: 15, cd: 3.2, leaves: 'spores' },
+    ],
+  },
+  mimic: {
+    name: 'Chest Mimic', hp: 112, speed: 100, radius: 16, xp: 30, gold: 40,
+    ai: 'ambush', color: '#8a6238', dark: '#3c2a17',
+    attacks: [
+      { id: 'chomp', kind: 'blue', shape: 'melee', range: 80, reach: 56, arc: 1.7,
+        wind: 0.4, active: 0.12, recover: 0.35, damage: 16, cd: 1.2, lunge: 380 },
+      { id: 'gulp', kind: 'red', shape: 'melee', range: 90, reach: 64, arc: 2.0,
+        wind: 0.72, active: 0.18, recover: 0.8, damage: 28, cd: 5.5, lunge: 300 },
+    ],
+  },
+  lancer: {
+    name: 'Phantom Lancer', hp: 72, speed: 74, radius: 13, xp: 24, gold: 12,
+    ai: 'blink', color: '#9fe0d0', dark: '#24524a',
+    attacks: [
+      { id: 'jab', kind: 'blue', shape: 'melee', range: 92, reach: 70, arc: 0.9,
+        wind: 0.38, active: 0.1, recover: 0.36, damage: 12, cd: 1.4, lunge: 300 },
+      // Long, narrow and unblockable: step to the side, not backwards.
+      { id: 'thrust', kind: 'red', shape: 'melee', range: 120, reach: 104, arc: 0.55,
+        wind: 0.62, active: 0.14, recover: 0.7, damage: 24, cd: 4.2, lunge: 520 },
+    ],
+  },
+
+  /* A companion who put on the Cursed Totem. Name and colours are overridden
+     per instance from the companion it used to be (Game.companionTurns). */
+  turncoat: {
+    name: 'Turncoat', hp: 180, speed: 132, radius: 13, xp: 60, gold: 40,
+    ai: 'chase', color: '#b03a2f', dark: '#3a1410',
+    attacks: [
+      { id: 'slash', kind: 'blue', shape: 'melee', range: 80, reach: 56, arc: 1.7,
+        wind: 0.34, active: 0.12, recover: 0.3, damage: 14, cd: 1.0, lunge: 380 },
+      { id: 'betrayal', kind: 'red', shape: 'melee', range: 90, reach: 66, arc: 1.8,
+        wind: 0.62, active: 0.16, recover: 0.7, damage: 28, cd: 4.6, lunge: 320 },
+    ],
+  },
+
   /* John Space stands in the deep regions and does nothing. He is neutral,
      carries a bar so you know he is Someone, and what he becomes is decided
-     entirely by whether you leave him alone. */
+     entirely by whether you leave him alone.
+
+     Update 3.0: press E on him and he fights you — a trial. Survive two
+     minutes without striking back and he joins you. His light attacks cannot
+     be parried; his HEAVY attacks can, and parrying one starts a chain of
+     faster and faster follow-up heavies that all have to be parried. */
   johnspace: {
     name: 'John Space', hp: 500, speed: 96, radius: 16, xp: 260, gold: 200,
     ai: 'neutral', color: '#8fd4ff', dark: '#2b3c66',
@@ -904,12 +1362,24 @@ const ENEMY_TYPES = {
     // above his hostile one.
     neutral: true, showBar: true, noScale: true,
     peaceRequired: 120,        // seconds of being left alone
+    trialRequired: 120,        // seconds survived in the trial
     enragedHp: 1000, enragedDmgMul: 2,
     attacks: [
       { id: 'jab', kind: 'blue', shape: 'melee', range: 84, reach: 60, arc: 1.8,
         wind: 0.34, active: 0.13, recover: 0.3, damage: 20, cd: 1.1, lunge: 400 },
       { id: 'haymaker', kind: 'red', shape: 'melee', range: 92, reach: 70, arc: 1.7,
         wind: 0.6, active: 0.17, recover: 0.7, damage: 34, cd: 4.5, lunge: 340 },
+    ],
+    trialAttacks: [
+      { id: 'jab', kind: 'blue', shape: 'melee', range: 84, reach: 62, arc: 1.8,
+        wind: 0.3, active: 0.12, recover: 0.22, damage: 16, cd: 0.9, lunge: 420 },
+      { id: 'cross', kind: 'blue', shape: 'melee', range: 96, reach: 66, arc: 1.5,
+        wind: 0.42, active: 0.12, recover: 0.3, damage: 22, cd: 1.6, lunge: 520 },
+      { id: 'comet', kind: 'red', shape: 'charge', range: 360, minRange: 120,
+        wind: 0.7, active: 0.42, recover: 0.6, damage: 30, cd: 5.5, chargeSpeed: 720 },
+      { id: 'spaceHammer', kind: 'heavy', shape: 'melee', range: 100, reach: 78, arc: 2.2,
+        wind: 0.9, active: 0.16, recover: 0.7, damage: 44, cd: 4.2, lunge: 280,
+        parryChain: [2, 4] },
     ],
   },
 
@@ -918,26 +1388,89 @@ const ENEMY_TYPES = {
     ai: 'boss', color: '#c8452f', dark: '#3d1712', boss: true,
   },
 
-  /* ---------------- Update 2.0 bosses ----------------
-     All three share the headline numbers: 3000 HP and a 1.5x damage
-     multiplier. Their movesets are what separate them. */
+  /* ---------------- bosses ----------------
+     Update 3.0: 100,000 HP in Tripolisis and 200,000 in Sarapolis (the map
+     table is authoritative; these mirror it), a 1.5x damage multiplier, and
+     combos that end in a parryable HEAVY. Chip damage barely marks them —
+     the rhythm break that a parried heavy opens is how they come down. */
   sungod: {
-    name: 'The Sun God', hp: 3000, speed: 52, radius: 36, xp: 700, gold: 500,
+    name: 'The Sun God', hp: 200000, speed: 52, radius: 36, xp: 700, gold: 500,
     ai: 'boss', color: '#ffc24d', dark: '#6b3a08', boss: true,
     bossDmgMul: 1.5, palette: 'sun',
     title: 'Predicament King',
   },
   flowery: {
-    name: 'Flowery', hp: 3000, speed: 40, radius: 40, xp: 700, gold: 500,
+    name: 'Flowery', hp: 100000, speed: 40, radius: 40, xp: 700, gold: 500,
     ai: 'boss', color: '#7fd66a', dark: '#264a1c', boss: true,
     bossDmgMul: 1.5, palette: 'flora',
     title: 'The Bloom That Watches',
   },
   judgement: {
-    name: 'Judgement', hp: 3000, speed: 74, radius: 34, xp: 700, gold: 500,
+    name: 'Judgement', hp: 200000, speed: 74, radius: 34, xp: 700, gold: 500,
     ai: 'boss', color: '#e8e2d4', dark: '#3a3630', boss: true,
     bossDmgMul: 1.5, palette: 'fist',
     title: 'Pure Devastation',
+  },
+};
+
+/* Update 3.0 boss moveset. Bosses now fight in combos — strings of light
+   attacks that end in a HEAVY. Light attacks (blue) cannot be parried on a
+   boss any more; only the gold HEAVY telegraph can, and parrying it is what
+   opens the rhythm break. Damage is still multiplied by the boss's scale. */
+const BOSS_MOVES = {
+  swipe: { id: 'b_swipe', kind: 'blue', shape: 'melee', range: 120, reach: 96, arc: 2.0,
+    wind: 0.42, active: 0.14, recover: 0.26, damage: 11, cd: 0, lunge: 300 },
+  lash: { id: 'b_lash', kind: 'blue', shape: 'melee', range: 175, reach: 150, arc: 0.9,
+    wind: 0.5, active: 0.14, recover: 0.3, damage: 12, cd: 0, lunge: 140 },
+  volley: { id: 'b_volley', kind: 'blue', shape: 'shot', range: 650,
+    wind: 0.5, active: 0.06, recover: 0.32, damage: 10, cd: 0, count: 5, spread: 0.42,
+    shot: { speed: 300, radius: 7 } },
+  heavySmash: { id: 'b_heavy', kind: 'heavy', shape: 'melee', range: 135, reach: 112, arc: 2.6,
+    wind: 1.0, active: 0.18, recover: 0.75, damage: 26, cd: 0, lunge: 240 },
+  heavyRush: { id: 'b_rush', kind: 'heavy', shape: 'charge', range: 650, reach: 150,
+    wind: 0.95, active: 0.5, recover: 0.8, damage: 24, cd: 0, chargeSpeed: 700 },
+};
+
+const BOSS_COMBOS = {
+  flora: [['lash', 'lash', 'heavySmash'], ['volley', 'swipe', 'heavySmash'], ['swipe', 'lash', 'volley', 'heavySmash']],
+  sun: [['volley', 'volley', 'heavySmash'], ['swipe', 'volley', 'heavyRush'], ['volley', 'swipe', 'swipe', 'heavySmash']],
+  fist: [['swipe', 'swipe', 'swipe', 'heavyRush'], ['heavyRush', 'heavySmash'], ['swipe', 'heavySmash', 'heavyRush']],
+};
+
+const BOSS_SHOT_COLOR = { sun: '#ffd27a', flora: '#a8e063', fist: '#e8e2d4' };
+
+/* What the bosses say: on their intro, on each phase change, sometimes as a
+   heavy winds up, and as they fall. */
+const BOSS_LINES = {
+  flowery: {
+    intro: [
+      'Oh. A visitor. Nobody visits the garden any more.',
+      'Stand still. I only want to plant you.',
+    ],
+    phase2: ['You are trampling my beds!', 'Roots, wake up. We have company.'],
+    phase3: ['If I wilt, I take the whole garden with me!', 'Bloom. BLOOM!'],
+    heavy: ['Prune!', 'Hold still...', 'Into the soil!'],
+    death: ['...it was such a nice garden.'],
+  },
+  sungod: {
+    intro: [
+      'Kneel. Every shadow down here is one I allowed.',
+      'You stand in a predicament, little thing. I AM the predicament.',
+    ],
+    phase2: ['You squint at the sun? Then burn.', 'Noon comes for you.'],
+    phase3: ['I have set on empires. I will not set on YOU.', 'ECLIPSE!'],
+    heavy: ['Bow!', 'Solar judgement!', 'Feel the noon!'],
+    death: ['The sun... goes down...', 'Dusk. Already?'],
+  },
+  judgement: {
+    intro: [
+      'The Sun God was a warning. I am the sentence.',
+      'No appeals. No mercy. Only Judgement.',
+    ],
+    phase2: ['Guilty.', 'Your defence is noted. And denied.'],
+    phase3: ['PURE. DEVASTATION.', 'The court is now in session!'],
+    heavy: ['Sentenced!', 'Order!', 'GUILTY!'],
+    death: ['...case... dismissed.'],
   },
 };
 
@@ -985,16 +1518,80 @@ class Enemy {
     this.lit = false;
     this.face = 0;         // which way it is turned — matters for shields
     this.room = null;      // set by the spawner, so a cleared room stays cleared
+    this.trial = false;    // John Space, provoked with E: the two-minute trial
+    this.trialT = 0;
+    this.chain = null;     // John's parry chain in progress
+    this.awake = t.ai !== 'ambush';   // mimics sit still until you are close
+    this.blinkCd = U.rand(1.5, 3);
+    this.combo = null;     // boss combo queue
+    this.lastHitBy = null; // companion credit for kills
     this._q = [];
   }
 
   canAct() { return this.stun <= 0 && this.stagger <= 0; }
+
+  // Companions and minions leave John Space alone while he is deciding about
+  // you — hitting him is your call, not theirs.
+  get targetable() { return !this.dead && !this.neutral && !this.trial; }
+
+  /* E on John Space: he fights you, and you are not allowed to fight back. */
+  startTrial(game) {
+    if (this.enraged || this.trial) return;
+    this.trial = true;
+    this.neutral = false;
+    this.aggro = true;
+    this.trialT = 0;
+    this.def_ai_override = 'chase';
+    this.speed = this.def.speed * 1.4;
+    this.stateT = 0;
+    game.fx.ring(this.x, this.y, 60, '#ffd479', 40);
+    game.fx.addShake(12);
+    game.fx.text(this.x, this.y - 46, '"FINE. SHOW ME."', '#ffd479', 18);
+    game.toast('John Space wants a fight. Survive two minutes — and do NOT hit him back.', 6);
+    game.audio.blip(90, 0.6, 0.2, 'sawtooth');
+  }
+
+  /* Parrying one of John's heavies does not stagger him: he answers with a
+     faster heavy, and another, and you have to parry every one. */
+  chainParried(game) {
+    const base = this.def.trialAttacks.find(a => a.parryChain);
+    if (!this.chain) this.chain = { left: U.randi(base.parryChain[0], base.parryChain[1] + 1), count: 0 };
+    const c = this.chain;
+    c.count++;
+    c.left--;
+    game.fx.text(this.x, this.y - this.radius - 26, `PARRY x${c.count}`, '#ffd479', 17 + c.count * 2);
+    if (c.left <= 0) {
+      // Chain broken: he reels, and the clock jumps forward as a reward.
+      this.chain = null;
+      this.atk = null;
+      this.stun = Math.max(this.stun, 2.6);
+      this.stagger = Math.max(this.stagger, 0.01);
+      this.trialT += 15;
+      game.fx.ring(this.x, this.y, 70, '#ffd479', 44);
+      game.fx.addShake(14);
+      game.impactFreeze(0.12);
+      game.fx.text(this.x, this.y - 54, 'CHAIN BROKEN  -15s', '#ffffff', 20);
+      game.audio.freeze();
+      return;
+    }
+    // The next one comes faster.
+    const def = { ...base, id: 'chain', wind: Math.max(0.3, 0.55 - c.count * 0.07), cd: 0 };
+    this.atk = {
+      def, t: 0, phase: 'wind', angle: U.angle(this.x, this.y, game.player.x, game.player.y),
+      fired: false, hit: false, target: game.player,
+    };
+    this.vx = 0; this.vy = 0;
+    game.impactFreeze(0.06);
+    game.audio.telegraph('red');
+  }
 
   /* You attacked him. He is now a 1000 HP problem that does double damage
      and does not stop following you. */
   enrage(game) {
     this.enraged = true;
     this.neutral = false;
+    this.trial = false;
+    this.chain = null;
     this.aggro = true;
     this.maxHp = this.def.enragedHp;
     this.hp = this.def.enragedHp;
@@ -1011,6 +1608,8 @@ class Enemy {
 
   // Parried enemies are open: they stop acting and take extra damage.
   onParried(game) {
+    if (this.trial) { this.chainParried(game); return; }
+    if (this.def.boss) { this.combo = null; this.state = 'idle'; this.stateT = 0; }
     this.stagger = PARRY.stagger;
     this.stun = Math.max(this.stun, PARRY.stagger);
     this.atk = null;
@@ -1054,8 +1653,9 @@ class Enemy {
 
   takeDamage(n, game, srcX, srcY, knock = 0, crit = false) {
     if (this.dead) return;
-    // Hit John Space once and the arrangement is over.
-    if (this.neutral && !this.enraged) this.enrage(game);
+    // Hit John Space once — neutral or mid-trial — and the arrangement is over.
+    if ((this.neutral || this.trial) && !this.enraged) this.enrage(game);
+    if (!this.awake) this.wake(game);
     if (this.stagger > 0) n *= PARRY.vuln;
 
     /* Ironclads eat frontal damage until you open them. Parrying strips the
@@ -1093,9 +1693,27 @@ class Enemy {
     if (this.hp <= 0) this.die(game);
   }
 
+  // A mimic's lid comes up.
+  wake(game) {
+    this.awake = true;
+    this.aggro = true;
+    game.fx.text(this.x, this.y - this.radius - 22, "IT'S A MIMIC!", '#e2b34a', 16);
+    game.fx.spark(this.x, this.y, { count: 14, color: ['#e2b34a', '#8a6238'], speedMax: 200, lifeMax: 0.5 });
+    game.audio.telegraph('red');
+  }
+
   die(game) {
     if (this.dead) return;
     this.dead = true;
+    // Companions grow on kills: the one that landed the blow takes it all,
+    // the rest share a slice of every kill made near them.
+    if (game.companions) {
+      for (const c of game.companions) {
+        if (c.dead || !c.gainXp) continue;
+        const own = this.lastHitBy === c;
+        if (own || U.dist(c.x, c.y, this.x, this.y) < 700) c.gainXp(this.xpValue * (own ? 1 : 0.35), game);
+      }
+    }
     // Killing a lit Curse does not defuse it — it just sets it off early.
     if (this.def.suicide && this.lit) {
       this.lit = false;
@@ -1119,11 +1737,15 @@ class Enemy {
 
     const coins = U.clamp(Math.round(this.goldValue / 4), 1, 9);
     for (let i = 0; i < coins; i++) game.pickups.push(new Pickup('gold', this.x, this.y, Math.ceil(this.goldValue / coins)));
-    if (U.chance(this.def.boss ? 1 : 0.11)) {
+    if (U.chance(this.def.boss ? 1 : 0.11 * (1 + (game.player.luck || 0)))) {
       const n = this.def.boss ? 5 : 1;
       for (let i = 0; i < n; i++) game.pickups.push(new Pickup('heart', this.x, this.y, 20));
     }
     if (this.elite || this.def.boss) game.pickups.push(new Pickup('shard', this.x, this.y, 1));
+    if (this.dropsTotem) {
+      game.player.bag.push('cursed-totem');
+      game.toast('The Cursed Totem drops back into your bag. Keep it off your friends.', 4);
+    }
 
     if (this.def.boss) game.onBossDefeated();
   }
@@ -1145,6 +1767,19 @@ class Enemy {
     this.bob += dt * 6;
 
     const seeP = U.dist(this.x, this.y, p.x, p.y);
+
+    // A mimic is furniture until you are within arm's reach.
+    if (!this.awake) {
+      if (seeP < 105) this.wake(game);
+      else { this.vx = this.vy = 0; return; }
+    }
+
+    // John's trial runs on a clock: last it out and he is yours.
+    if (this.trial) {
+      this.trialT += dt;
+      if (this.trialT >= this.def.trialRequired) { game.johnBefriended(this); return; }
+    }
+
     const canSee = seeP < 620 && (this.def.ghost || dun.lineOfSight(this.x, this.y, p.x, p.y));
     if (canSee && seeP < 480) { this.aggro = true; this.lastSeen = { x: p.x, y: p.y }; }
 
@@ -1231,9 +1866,37 @@ class Enemy {
           break;
         }
         case 'charger':
-        case 'phase': {
+        case 'phase':
+        case 'ambush': {
           ax = Math.cos(ang) * this.speed;
           ay = Math.sin(ang) * this.speed;
+          break;
+        }
+        case 'cop': {
+          // Cruises at a distance and circles, lining up the next run.
+          const want = 300;
+          const drift = d < want - 80 ? -1 : d > want + 80 ? 1 : 0;
+          const strafe = ang + Math.PI / 2;
+          ax = Math.cos(ang) * this.speed * drift + Math.cos(strafe) * this.speed * 0.6;
+          ay = Math.sin(ang) * this.speed * drift + Math.sin(strafe) * this.speed * 0.6;
+          break;
+        }
+        case 'blink': {
+          // Stalks slowly, and every few seconds simply steps out beside you.
+          ax = Math.cos(ang) * this.speed * 0.6;
+          ay = Math.sin(ang) * this.speed * 0.6;
+          this.blinkCd -= dt;
+          if (this.blinkCd <= 0 && d > 150 && d < 520 && focus === p) {
+            this.blinkCd = U.rand(3.5, 5.5);
+            const side = ang + Math.PI / 2 * (U.chance(0.5) ? 1 : -1) + Math.PI;
+            const tx = p.x + Math.cos(side) * 95, ty = p.y + Math.sin(side) * 95;
+            if (bodyFits(dun, tx, ty, this.radius) && dun.lineOfSight(p.x, p.y, tx, ty)) {
+              game.fx.spark(this.x, this.y, { count: 14, color: [this.def.color, '#ffffff'], speedMax: 160, lifeMax: 0.4 });
+              this.x = tx; this.y = ty; this.vx = this.vy = 0;
+              game.fx.ring(tx, ty, 22, this.def.color, 16);
+              game.audio.blip(1200, 0.08, 0.06, 'sine');
+            }
+          }
           break;
         }
         case 'boss': {
@@ -1289,7 +1952,7 @@ class Enemy {
   // Prefer a taunting minion, but only if it is meaningfully nearer, so the
   // player can still be reached when they walk past the wall.
   pickFocus(game, p, distToPlayer) {
-    if (!game.minions || !game.minions.length) return p;
+    if (this.trial || !game.minions || !game.minions.length) return p;
     let best = p, bestD = distToPlayer * 0.85;
     for (const m of game.minions) {
       if (m.dead || !m.taunt) continue;
@@ -1301,14 +1964,17 @@ class Enemy {
 
   tryAttack(game, ang, d, focus) {
     if (this.atk || !this.canAct() || !this.def.attacks) return;
-    const ready = this.def.attacks.filter(a =>
+    const list = this.trial && this.def.trialAttacks ? this.def.trialAttacks : this.def.attacks;
+    // On trial John fights only you — never the Bone Brute standing nearby.
+    if (this.trial) focus = game.player;
+    const ready = list.filter(a =>
       (this.atkCds[a.id] || 0) <= 0 &&
       d <= a.range + this.radius &&
       d >= (a.minRange || 0));
     if (!ready.length) return;
     // Prefer the unblockable when it is available: it should feel like a
     // punish for standing still, not a coin flip.
-    const red = ready.filter(a => a.kind === 'red');
+    const red = ready.filter(a => a.kind === 'red' || a.kind === 'heavy');
     const def = red.length && U.chance(0.55) ? U.pick(red) : U.pick(ready);
     this.atk = { def, t: 0, phase: 'wind', angle: ang, fired: false, hit: false, target: focus || game.player };
     game.audio.telegraph(def.kind);
@@ -1324,16 +1990,32 @@ class Enemy {
       a.phase = 'wind';
       // Track the player during the wind-up, but sluggishly, so committing
       // to a direction is still a mistake the player can exploit.
-      const want = U.angle(this.x, this.y, p.x, p.y);
-      a.angle += U.clamp(U.angleDiff(a.angle, want), -2.2 * dt, 2.2 * dt);
-      ax = Math.cos(a.angle) * this.speed * 0.15;
-      ay = Math.sin(a.angle) * this.speed * 0.15;
+      // A locked aim (the cop car) commits to its lane the moment it revs.
+      if (!def.lockAim) {
+        const want = U.angle(this.x, this.y, p.x, p.y);
+        a.angle += U.clamp(U.angleDiff(a.angle, want), -2.2 * dt, 2.2 * dt);
+        ax = Math.cos(a.angle) * this.speed * 0.15;
+        ay = Math.sin(a.angle) * this.speed * 0.15;
+      }
     } else if (a.t < def.wind + def.active) {
       a.phase = 'active';
       if (!a.fired) { a.fired = true; this.fireAttack(game, a, p); }
       if (def.shape === 'charge') {
         ax = Math.cos(a.angle) * def.chargeSpeed;
         ay = Math.sin(a.angle) * def.chargeSpeed;
+        // A car that drives into a wall crashes, and sits there dazed.
+        if (this.def.vehicle && game.dungeon.isSolidAt(
+          this.x + Math.cos(a.angle) * (this.radius + 6), this.y + Math.sin(a.angle) * (this.radius + 6))) {
+          this.atkCds[def.id] = def.cd;
+          this.atk = null;
+          this.stun = Math.max(this.stun, 1.6);
+          this.vx = this.vy = 0;
+          game.fx.text(this.x, this.y - this.radius - 18, 'CRASH!', '#ffd479', 17);
+          game.fx.spark(this.x, this.y, { count: 20, color: ['#ffd479', '#8fa0b8', '#ffffff'], speedMax: 260, lifeMax: 0.5 });
+          game.fx.addShake(7);
+          game.audio.explode();
+          return { ax: 0, ay: 0 };
+        }
         // A charge connects on contact rather than at a fixed instant.
         if (!a.hit && U.dist(this.x, this.y, p.x, p.y) < this.radius + p.radius + 4) {
           a.hit = true;
@@ -1348,6 +2030,7 @@ class Enemy {
     } else {
       this.atkCds[def.id] = def.cd * U.rand(0.85, 1.2);
       this.atk = null;
+      if (def.id === 'chain') this.chain = null;   // whiffed or dodged: chain over
     }
     return { ax, ay };
   }
@@ -1355,9 +2038,25 @@ class Enemy {
   fireAttack(game, a, p) {
     const def = a.def;
     if (def.shape === 'shot') {
-      this.shoot(game, a.angle, {
-        damage: def.damage, ...def.shot,
-      }, 1, def.kind);
+      const n = def.count || 1;
+      const color = def.shot.color || BOSS_SHOT_COLOR[this.def.palette] || '#ffffff';
+      for (let i = 0; i < n; i++) {
+        const off = n > 1 ? (i - (n - 1) / 2) * (def.spread || 0.3) : 0;
+        this.shoot(game, a.angle + off, { damage: def.damage, ...def.shot, color }, 1, def.kind);
+      }
+      return;
+    }
+    if (def.shape === 'nova') {
+      // A burst all the way round: distance is the only answer.
+      game.fx.ring(this.x, this.y, def.reach * 0.6, this.def.color, 34);
+      game.fx.spark(this.x, this.y, { count: 30, color: [this.def.color, '#ffffff'], speedMax: 260, lifeMax: 0.6 });
+      if (U.dist(this.x, this.y, p.x, p.y) < def.reach + p.radius) this.landHit(game, p, def);
+      if (def.leaves === 'spores') {
+        game.zones.push(new Zone('goo', this.x, this.y, {
+          radius: 74, life: 4.5, tickEvery: 0.7, damage: 4 * this.dmgScale, power: 1, hostile: true, tint: 'spore',
+        }));
+      }
+      game.audio.cast('earth', true);
       return;
     }
     if (def.shape === 'impact') {
@@ -1387,6 +2086,7 @@ class Enemy {
     const result = p.takeHit(def.damage * this.dmgScale, game, {
       x: this.x, y: this.y, kind: def.kind, source: this,
     });
+    if (result !== 'parry' && def.id === 'chain') this.chain = null;
     game.fx.spark(this.x + Math.cos(angle) * this.radius,
       this.y + Math.sin(angle) * this.radius, {
       count: 8, color: def.kind === 'red' ? ['#ff6b52', '#ffb27a'] : ['#cfe4ff', '#ffffff'],
@@ -1401,7 +2101,7 @@ class Enemy {
       y: this.y + Math.sin(angle) * (this.radius + 4),
       vx: Math.cos(angle) * shot.speed * speedMul,
       vy: Math.sin(angle) * shot.speed * speedMul,
-      damage: shot.damage * (1 + this.tier * 0.22),
+      damage: shot.damage * (1 + this.tier * 0.22) * (this.shotMul || 1),
       life: 3, radius: shot.radius, color: shot.color,
       homing: shot.homing || 0, owner: 'enemy',
       pierce: !!shot.pierce, leaves: shot.leaves || null,
@@ -1416,14 +2116,38 @@ class Enemy {
     if (newPhase !== this.phase) {
       this.phase = newPhase;
       this.state = 'idle'; this.stateT = 0; this.shotCd = 1.2;
+      this.combo = null;
       game.fx.ring(this.x, this.y, this.radius * 1.4, '#ff8a5c', 46);
       game.fx.addShake(16);
-      game.toast(`The Warden ${newPhase === 2 ? 'roars and calls its dead' : 'burns with hollow fire'}`);
+      game.bossSay(this, newPhase === 2 ? 'phase2' : 'phase3');
     }
 
     let ax = 0, ay = 0;
 
-    if (this.state === 'slamWind') {
+    if (this.state === 'combo') {
+      /* Run the queued combo one attack at a time. Each attack is a normal
+         telegraphed `atk`, so it gets the same rings, poses and parry rules
+         as everything else; this just walks the boss into range first. */
+      if (!this.combo || !this.combo.length) {
+        this.combo = null; this.state = 'idle'; this.stateT = 0;
+      } else {
+        const def = BOSS_MOVES[this.combo[0]];
+        const inRange = d <= def.range + this.radius;
+        this.comboWait = (this.comboWait || 0) + dt;
+        if (inRange || this.comboWait > 2.2) {
+          this.combo.shift();
+          this.comboWait = 0;
+          if (inRange) {
+            this.atk = { def, t: 0, phase: 'wind', angle: ang, fired: false, hit: false, target: game.player };
+            game.audio.telegraph(def.kind);
+            if (def.kind === 'heavy' && U.chance(0.35)) game.bossSay(this, 'heavy');
+          }
+        } else {
+          ax = Math.cos(ang) * this.speed * 1.5;
+          ay = Math.sin(ang) * this.speed * 1.5;
+        }
+      }
+    } else if (this.state === 'slamWind') {
       if (this.stateT > 0.7) {
         this.state = 'idle'; this.stateT = 0;
         game.fx.ring(this.x, this.y, 120, '#ff8a5c', 40);
@@ -1475,8 +2199,18 @@ class Enemy {
         if (this.def.palette === 'sun') moves.push('spiral', 'slamWind');
         else if (this.def.palette === 'flora') moves.push('summon', 'summon', 'slamWind');
         else if (this.def.palette === 'fist') moves.push('chargeWind', 'chargeWind', 'chargeWind');
-        const pickMove = d < 170 ? 'slamWind' : U.pick(moves);
-        if (pickMove === 'summon') {
+        // Update 3.0: combos are now the backbone of every named boss.
+        const combos = BOSS_COMBOS[this.def.palette];
+        if (combos) moves.push('combo', 'combo', 'combo', 'combo');
+        const pickMove = d < 170 && !combos ? 'slamWind'
+          : d < 170 && U.chance(0.35) ? 'slamWind' : U.pick(moves);
+        if (pickMove === 'combo') {
+          this.combo = U.pick(combos).slice();
+          // Later phases tack an extra light hit onto the front.
+          if (this.phase >= 2) this.combo.unshift(U.pick(['swipe', 'volley']));
+          this.comboWait = 0;
+          this.state = 'combo';
+        } else if (pickMove === 'summon') {
           for (let i = 0; i < (this.phase === 3 ? 4 : 3); i++) {
             const a = U.rand(0, Math.PI * 2);
             game.spawnEnemy(U.pick(['bat', 'skeleton', 'slime']),

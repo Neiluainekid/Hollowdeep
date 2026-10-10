@@ -79,6 +79,12 @@ class Audio2 {
   // Telegraphs are audio cues too — you should be able to hear a red coming
   // from off-screen and start moving before you see it.
   telegraph(kind) {
+    if (kind === 'heavy') {
+      // A deep gong: the one attack a boss lets you parry.
+      this.blip(110, 0.5, 0.15, 'triangle');
+      this.blip(220, 0.4, 0.08, 'sine');
+      return;
+    }
     if (kind === 'red') {
       this.blip(150, 0.3, 0.13, 'sawtooth');
       this.noise({ dur: 0.3, gain: 0.1, from: 260, to: 90, q: 3 });
@@ -238,6 +244,12 @@ class Game {
     this.companions = [];
     this.johnSpace = null;
     this.roulette = { open: false, held: 0, slot: Seq.FIRST };
+    this.trail = [];              // player breadcrumbs that followers track
+    this.companionKinds = new Set();   // one of each kind per dungeon
+    this.cinematic = null;        // boss intro
+    this.speech = null;           // boss line over its head
+    this.invView = 0;             // inventory: 0 = you, 1.. = companions
+    this.shopProp = null;
 
     this.bindEvents();
     this.resize();
@@ -280,6 +292,23 @@ class Game {
     };
 
     window.addEventListener('keydown', (e) => {
+      // Menus first: they own the keyboard while they are open.
+      if (this.state === 'inventory' || this.state === 'shop') {
+        if (e.code === 'Escape' || (e.code === 'KeyI' && this.state === 'inventory')
+          || (e.code === 'KeyE' && this.state === 'shop')) this.closeMenus();
+        else if (this.state === 'inventory' && (e.code === 'ArrowRight' || e.code === 'ArrowLeft')) {
+          this.cycleInventory(e.code === 'ArrowRight' ? 1 : -1);
+        }
+        e.preventDefault();
+        return;
+      }
+      // A boss intro can be skipped.
+      if (this.cinematic && !e.repeat && ['KeyE', 'Space', 'Enter', 'Escape'].includes(e.code)) {
+        this.cinematic.t = Math.max(this.cinematic.t, this.cinematic.dur - 0.35);
+        e.preventDefault();
+        return;
+      }
+      if (e.code === 'KeyI' && !e.repeat && this.state === 'playing') { this.openInventory(); e.preventDefault(); return; }
       // While the rhythm break is up, WASD is the minigame, not movement.
       if (this.rhythm && !this.rhythm.done && !e.repeat
           && ['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(e.code)) {
@@ -324,6 +353,8 @@ class Game {
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     document.getElementById('quitBtn').onclick = () => location.reload();
+    document.getElementById('invPrev').onclick = () => this.cycleInventory(-1);
+    document.getElementById('invNext').onclick = () => this.cycleInventory(1);
     document.getElementById('againBtn').onclick = () => location.reload();
   }
 
@@ -361,6 +392,14 @@ class Game {
     this.mapNumber = Seq.clampTo(MAPS, number);
     const def = Maps.byNumber(this.mapNumber);
 
+    /* A new dungeon sends every companion home (Update 3.0) — they must be
+       found again down here. Their gear comes back to your bag first. */
+    if (this.player && this.companions.length && !opts.fresh) {
+      let left = 0;
+      for (const c of this.companions) { this.returnCompanionGear(c); if (!c.dead) left++; }
+      if (left) setTimeout(() => this.toast('Your companions stay behind. Find new ones down here.', 4.5), 4800);
+    }
+
     // Drop the previous world wholesale so two maps never sit in memory at once.
     this.enemies = [];
     this.projectiles = [];
@@ -369,7 +408,11 @@ class Game {
     this.zones = [];
     this.impacts = [];
     this.companions = [];
+    this.companionKinds = new Set();
     this.johnSpace = null;
+    this.trail = [];
+    this.cinematic = null;
+    this.speech = null;
     this.fx.clear();
     this.dungeon = new Dungeon(Seq.get(this.mapSeeds, this.mapNumber), def);
     this.exploreCanvas = null;    // rebuilt lazily at the new map's size
@@ -399,13 +442,15 @@ class Game {
     this.bossDefeated = false;
     this.boss = null;
     this.rhythm = null;
+    this.pendingDescend = null;
+    this.pendingFinal = null;
     this.gateFound = false;
     this.currentRoom = null;
     this.pendingLevelUps = 0;
     this.hudCache = {};
     this.state = 'playing';
 
-    for (const id of ['title', 'levelup', 'pause', 'mapscreen', 'endscreen']) {
+    for (const id of ['title', 'levelup', 'pause', 'mapscreen', 'endscreen', 'inventory', 'shop']) {
       document.getElementById(id).classList.add('hidden');
     }
     document.getElementById('hud').classList.remove('hidden');
@@ -437,6 +482,9 @@ class Game {
     d.props.forEach((p, i) => { if (p.used) usedProps.push(i); });
     const cleared = [];
     d.rooms.forEach((r, i) => { if (r.cleared) cleared.push(i); });
+    // Merchants: what is still on the shelf, by prop index.
+    const merchants = [];
+    d.props.forEach((p, i) => { if (p.type === 'merchant') merchants.push([i, p.stock.slice()]); });
 
     return {
       v: Save.VERSION,
@@ -452,7 +500,10 @@ class Game {
         cleared,
         bossDefeated: this.bossDefeated,
         explored: Save.encodeExplored(d.explored),
+        merchants,
+        companionKinds: [...this.companionKinds],
       },
+      companions: this.companions.filter(c => !c.dead).map(c => c.serialize()),
     };
   }
 
@@ -481,9 +532,43 @@ class Game {
       if (room) { room.cleared = true; room.spawned = true; }   // stays empty
     }
     this.bossDefeated = !!w.bossDefeated;
+    // Suspended mid boss fight: the fight did not survive the save, so let
+    // the gate be opened again rather than leaving the map unfinishable.
+    if (!this.bossDefeated) {
+      for (const pr of this.dungeon.props) if (pr.type === 'gate') pr.used = false;
+    }
     if (w.explored) {
       this.dungeon.explored = Save.decodeExplored(w.explored, this.dungeon.w * this.dungeon.h);
       this.exploreCanvas = null;   // force a full repaint of the cached minimap
+    }
+    for (const [i, stock] of w.merchants || []) {
+      const m = this.dungeon.props[i];
+      if (m && m.type === 'merchant') m.stock = stock.filter(id => Gear.get(id));
+    }
+    this.companionKinds = new Set(w.companionKinds || []);
+
+    // Companions come back at your side, with their levels and gear.
+    for (const cd of data.companions || []) {
+      if (!COMPANIONS[cd.kind]) continue;
+      const spot = this.safeSpawnNear(player.x, player.y, 40, U.rand(0, Math.PI * 2), 14);
+      const c = new Companion(cd.kind, spot.x, spot.y);
+      for (let lv = 1; lv < (cd.level || 1); lv++) {
+        c.level++;
+        c.maxHp += Math.round(c.def.hp * 0.12);
+      }
+      c.xpNext = companionXpNeeded(c.level);
+      c.xp = cd.xp || 0;
+      for (const [slot, id] of Object.entries(cd.equip || {})) {
+        const item = Gear.get(id);
+        if (!item || item.slot !== slot || item.cursed) continue;
+        c.equip[slot] = id;
+        Gear.applyToCompanion(c, item, +1);
+      }
+      c.hp = U.clamp(cd.hp ?? c.maxHp, 1, c.maxHp);
+      this.companions.push(c);
+      this.companionKinds.add(cd.kind);
+      // John was already won over; do not leave a second one standing there.
+      if (cd.kind === 'johnspace' && this.johnSpace) { this.johnSpace.dead = true; this.johnSpace = null; }
     }
 
     // Consumed on load: you may suspend a run, but you may not rewind a death.
@@ -714,7 +799,8 @@ class Game {
 
     /* Perfect Parry — a 1-in-20 execution. Bosses are never eligible: a
        lottery ending a set-piece fight would gut it. */
-    const executable = src && !src.dead && src.takeDamage && !src.def?.boss;
+    // Nor is John Space mid-trial: the whole point is that you never hit him.
+    const executable = src && !src.dead && src.takeDamage && !src.def?.boss && !src.trial && !src.neutral;
     if (executable && U.randi(1, PARRY.perfectOdds + 1) === Seq.FIRST) {
       this.fx.text(p.x, p.y - 44, 'PERFECT PARRY', '#ffffff', 24);
       this.fx.text(src.x, src.y - 40, 'EXECUTED', '#8fd4ff', 18);
@@ -750,24 +836,39 @@ class Game {
 
   onBossDefeated() {
     const def = Maps.byNumber(this.mapNumber);
+    const fallen = this.boss;
+    if (fallen) this.bossSay(fallen, 'death');
+    Save.updateMeta(m => {
+      const type = fallen ? fallen.type : def.bossType;
+      if (!m.bossesFelled.includes(type)) m.bossesFelled.push(type);
+    });
+
+    /* Sarapolis has a second act: when the gate boss falls, the final boss
+       steps out of the wreckage with its own intro. The room stays sealed. */
+    if (def.finalBoss && fallen && fallen.type !== def.finalBoss.type) {
+      // Counted in game time (see update), so a menu cannot swallow it.
+      this.boss = null;
+      this.pendingFinal = { t: 2.6, x: fallen.x, y: fallen.y, tier: fallen.tier };
+      this.toast(`${def.bossName} falls... but the room stays sealed.`, 4);
+      return;
+    }
+
     this.bossActive = false;
     this.bossDefeated = true;
     this.dungeon.sealed = false;
     this.boss = null;
-    Save.updateMeta(m => {
-      if (!m.bossesFelled.includes(def.bossType)) m.bossesFelled.push(def.bossType);
-    });
 
     const isLast = Maps.isLast(this.mapNumber);
+    const name = fallen ? fallen.def.name : def.bossName;
     this.toast(isLast
-      ? `${def.bossName} falls. The deep is yours.`
-      : `${def.bossName} falls. A way down opens.`, 6);
+      ? `${name} falls. The deep is yours.`
+      : `${name} falls. A way down opens.`, 6);
 
-    setTimeout(() => {
-      if (this.state !== 'playing') return;
-      if (isLast) this.endRun(true);
-      else this.descend();
-    }, 2800);
+    /* Counted in game time. This used to be a 2.8s setTimeout that bailed
+       out if the game was not 'playing' when it fired — and a boss kill
+       usually levels you up, so the perk screen was open at exactly that
+       moment and the run never moved on. */
+    this.pendingDescend = { t: 2.8, isLast };
   }
 
   descend() {
@@ -819,7 +920,7 @@ class Game {
       this.state = 'paused';
       const p = this.player;
       document.getElementById('pauseStats').innerHTML = [
-        ['Class', `${p.cls.className} — ${p.cls.weapon}`],
+        ['Class', `${p.cls.className} — ${p.weaponName}`],
         ['Level', `${p.level}`],
         ['Health', `${Math.ceil(p.hp)} / ${p.maxHp}`],
         ['Damage', `${Math.round(p.power * 100)}%`],
@@ -988,11 +1089,22 @@ class Game {
     return this.propHash.nearest(this.player.x, this.player.y, 72, p => !p.used);
   }
 
+  // John Space, still neutral and within reach: E is how you provoke him.
+  nearbyJohn() {
+    const j = this.johnSpace;
+    if (!j || j.dead || !j.neutral || j.trial || j.enraged) return null;
+    return U.dist(this.player.x, this.player.y, j.x, j.y) < 86 ? j : null;
+  }
+
   interact() {
-    if (this.state !== 'playing') return;
+    if (this.state !== 'playing' || this.cinematic) return;
+    const john = this.nearbyJohn();
+    if (john) { john.startTrial(this); this.hudCache.prompt = null; return; }
     const prop = this.nearbyProp();
     if (!prop) return;
     const p = this.player;
+
+    if (prop.type === 'merchant') { this.openShop(prop); return; }
 
     if (prop.type === 'chest') {
       prop.used = true;
@@ -1000,6 +1112,14 @@ class Game {
       const gold = Math.round(base * (1 + p.level * 0.08) * p.goldMul);
       p.gold += gold;
       this.fx.text(prop.x, prop.y - 24, `+${gold} gold`, '#e2b34a', 17);
+      // Update 3.0: chests sometimes hold an accessory.
+      if (U.chance(prop.rich ? 0.6 : 0.12)) {
+        const pool = ACCESSORIES.filter(a => !a.cursed && a.price < (prop.rich ? 900 : 400) * this.mapNumber);
+        const item = U.pick(pool);
+        p.bag.push(item.id);
+        this.fx.text(prop.x, prop.y - 44, item.name, Gear.rarity(item).color, 15);
+        this.toast(`Found: ${item.name} — ${item.desc} (I to equip)`, 4);
+      }
       this.fx.spark(prop.x, prop.y, { count: 26, color: ['#e2b34a', '#fff1c9'], speedMax: 220, gravity: 300, lifeMax: 0.9 });
       if (prop.rich || U.chance(0.4)) this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
       if (U.chance(0.5)) this.pickups.push(new Pickup('heart', prop.x, prop.y, 22));
@@ -1028,7 +1148,15 @@ class Game {
       this.openPerkChoice('shrine');
 
     } else if (prop.type === 'cage') {
+      // One of each kind per dungeon: until you go down a level, the one you
+      // already have (or had) is the only one you get.
+      if (this.companionKinds.has(prop.npc)) {
+        this.toast(`You already found ${COMPANIONS[prop.npc].name} in this dungeon.`, 3.5);
+        this.audio.blip(200, 0.15, 0.08, 'triangle');
+        return;
+      }
       prop.used = true;
+      this.companionKinds.add(prop.npc);
       const c = new Companion(prop.npc, prop.x, prop.y);
       this.companions.push(c);
       this.fx.ring(prop.x, prop.y, 44, c.def.color, 30);
@@ -1112,9 +1240,13 @@ class Game {
     const count = 4 + Math.min(3, Math.floor(threat / 2));
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + U.rand(-0.3, 0.3);
-      const spot = this.safeSpawnNear(prop.x, prop.y, U.rand(90, 170), a);
-      const e = this.spawnEnemy(U.pick(table), spot.x, spot.y,
-        threat, i === count - 1);
+      const elite = i === count - 1;
+      const type = U.pick(table);
+      // Size the clearance to the actual body (elites are 25% bigger), so
+      // nothing is placed overlapping rock or on the far side of a wall.
+      const bodyR = ENEMY_TYPES[type].radius * (elite ? 1.25 : 1) + 2;
+      const spot = this.safeSpawnNear(prop.x, prop.y, U.rand(90, 170), a, bodyR);
+      const e = this.spawnEnemy(type, spot.x, spot.y, threat, elite);
       e.aggro = true;
       e.guardian = prop;   // marks it on screen and on the minimap
       prop.wave.push(e);
@@ -1136,7 +1268,8 @@ class Game {
 
     const threat = prop.room.threat + 1;
     const a = U.rand(0, Math.PI * 2);
-    const spot = this.safeSpawnNear(prop.x, prop.y, 110, a);
+    const spot = this.safeSpawnNear(prop.x, prop.y, 110, a,
+      ENEMY_TYPES[prop.minibossType].radius * 1.25 + 2);
     const boss = this.spawnEnemy(prop.minibossType, spot.x, spot.y, threat, true);
     boss.aggro = true;
     boss.maxHp = Math.round(boss.maxHp * 1.8);
@@ -1177,17 +1310,55 @@ class Game {
      Enemy is removed and a 500 HP Companion takes its place. */
   johnBefriended(enemy) {
     if (enemy.dead) return;
+    const viaTrial = enemy.trial;
     enemy.dead = true;
     if (this.johnSpace === enemy) this.johnSpace = null;
+    this.companionKinds.add('johnspace');
     const c = new Companion('johnspace', enemy.x, enemy.y);
+    // Earning him the hard way is worth a couple of levels.
+    if (viaTrial) c.gainXp(companionXpNeeded(1) + companionXpNeeded(2), this);
     this.companions.push(c);
     this.fx.ring(enemy.x, enemy.y, 60, '#8fd4ff', 40);
     this.fx.spark(enemy.x, enemy.y, {
       count: 40, color: ['#8fd4ff', '#ffffff'], speedMax: 300, lifeMax: 0.9, sizeMax: 5,
     });
     this.fx.text(enemy.x, enemy.y - 44, 'JOHN SPACE JOINS YOU', '#8fd4ff', 19);
-    this.toast('You left him alone for two minutes. John Space appreciates that.', 6);
+    this.toast(viaTrial
+      ? 'Two minutes, and you never hit back. "Alright. I\'m with you."'
+      : 'You left him alone for two minutes. John Space appreciates that.', 6);
     this.audio.freeze();
+  }
+
+  /* Companions keep nothing when they go: their gear returns to your bag. */
+  returnCompanionGear(c) {
+    if (!this.player || !c.equip) return;
+    for (const slot of Object.keys(c.equip)) {
+      if (!c.equip[slot]) continue;
+      Gear.unequip(this.player, c, slot);
+    }
+  }
+
+  /* The Cursed Totem on a companion: they turn on you. The companion is gone,
+     and in its place stands an enemy wearing its face — and the totem, which
+     drops back to you when it falls. */
+  companionTurns(c) {
+    const others = { ...c.equip, ring: null };
+    c.dead = true;
+    for (const id of Object.values(others)) if (id) this.player.bag.push(id);
+    c.equip = Gear.blankEquip();
+    const e = this.spawnEnemy('turncoat', c.x, c.y, this.currentRoom ? this.currentRoom.threat + 1 : 2, true);
+    e.def = { ...e.def, name: `${c.def.name} (Cursed)`, color: '#b03a2f', dark: c.def.dark };
+    e.titleName = e.def.name;
+    e.maxHp = Math.round(c.maxHp * 1.5);
+    e.hp = e.maxHp;
+    e.aggro = true;
+    e.dropsTotem = true;
+    this.fx.ring(c.x, c.y, 60, '#ff3b1f', 44);
+    this.fx.addFlash('#c8452f', 0.5);
+    this.fx.addShake(14);
+    this.fx.text(c.x, c.y - 44, 'THE TOTEM TAKES THEM', '#ff6b52', 18);
+    this.toast(`${c.def.name} put on the Cursed Totem — and turned on you.`, 5);
+    this.audio.blip(70, 0.8, 0.22, 'sawtooth');
   }
 
   updateRedShrines() {
@@ -1229,21 +1400,135 @@ class Game {
     // it stays tuned as maps are added or reordered.
     if (def.bossHp) { this.boss.maxHp = def.bossHp; this.boss.hp = def.bossHp; }
     this.boss.aggro = true;
-    this.fx.addShake(18);
-    this.fx.addFlash('#c8452f', 0.6);
-    this.toast(`The gate seals. ${def.bossName} wakes.`, 4);
     this.audio.blip(70, 0.7, 0.2, 'sawtooth');
+    this.startCinematic(this.boss);
+  }
+
+  /* ---------------- Update 3.0: boss intros and lines ----------------
+     Every boss gets an entrance: the world stops, the camera finds it, the
+     bars come down, its name card rises, and it speaks. Any of E / Space /
+     Enter / Esc skips. In the fight it talks on phase changes, sometimes
+     before a heavy, and once more when it falls. */
+
+  startCinematic(boss) {
+    const lines = (BOSS_LINES[boss.type] || {}).intro || ['...'];
+    this.cinematic = { boss, t: 0, dur: 2.2 + lines.length * 1.9, lines };
+    this.speech = null;
+    this.player.charging = false;
+    for (const k of ['left', 'right', 'up', 'down']) this.input[k] = 0;
+    this.fx.addShake(12);
+    this.audio.blip(55, 1.2, 0.2, 'sawtooth');
+  }
+
+  updateCinematic(dt) {
+    const c = this.cinematic;
+    c.t += dt;
+    // Ease the camera onto the boss, and back to the player at the end.
+    const focus = c.t < c.dur - 0.6 ? c.boss : this.player;
+    const tx = focus.x - this.vw / 2, ty = focus.y - this.vh / 2;
+    this.cam.x = U.damp(this.cam.x, tx, 0.09, dt);
+    this.cam.y = U.damp(this.cam.y, ty, 0.09, dt);
+    // The boss rises into place over the first second.
+    c.boss.introScale = U.clamp(c.t / 1.1, 0, 1);
+    if (c.t >= c.dur) {
+      c.boss.introScale = 1;
+      this.cinematic = null;
+      this.fx.addShake(18);
+      this.fx.addFlash('#c8452f', 0.5);
+      this.toast(`The gate seals. ${c.boss.def.name} wakes.`, 3.5);
+    }
+  }
+
+  drawCinematic(ctx) {
+    const c = this.cinematic;
+    if (!c) return;
+    const t = c.t, W = this.vw, H = this.vh;
+    const bar = Math.min(1, t / 0.5, (c.dur - t) / 0.4) * H * 0.12;
+    ctx.save();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, bar);
+    ctx.fillRect(0, H - bar, W, bar);
+
+    // Name card.
+    const card = U.clamp((t - 0.5) / 0.6, 0, 1) * U.clamp((c.dur - t) / 0.4, 0, 1);
+    ctx.globalAlpha = card;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = c.boss.def.color;
+    ctx.shadowBlur = 24; ctx.shadowColor = c.boss.def.color;
+    ctx.font = '400 46px "Iowan Old Style", Palatino, Georgia, serif';
+    ctx.fillText(c.boss.def.name.toUpperCase(), W / 2, H * 0.24 + (1 - card) * 20);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(240,230,210,.8)';
+    ctx.font = '600 13px system-ui';
+    ctx.fillText((c.boss.def.title || '').toUpperCase(), W / 2, H * 0.24 + 28);
+
+    // Dialogue, typed out a line at a time.
+    const lt = t - 1.2;
+    if (lt > 0) {
+      const i = Math.min(c.lines.length - 1, Math.floor(lt / 1.9));
+      const line = c.lines[i];
+      const shown = line.slice(0, Math.floor((lt - i * 1.9) * 40));
+      const bw = Math.min(640, W * 0.8), bh = 52;
+      const bx = (W - bw) / 2, by = H - bar - bh - 18;
+      ctx.globalAlpha = card * 0.85;
+      ctx.fillStyle = 'rgba(10,8,14,.9)';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = c.boss.def.color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.globalAlpha = card;
+      ctx.fillStyle = '#f0e6d2';
+      ctx.font = 'italic 17px "Iowan Old Style", Palatino, Georgia, serif';
+      ctx.fillText(`“${shown}”`, W / 2, by + 32);
+    }
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#f0e6d2';
+    ctx.font = '11px system-ui';
+    ctx.fillText('E — skip', W - 50, H - 12);
+    ctx.restore();
+  }
+
+  bossSay(boss, key) {
+    const set = (BOSS_LINES[boss.type] || {})[key];
+    if (!set || !set.length) return;
+    this.speech = { boss, text: U.pick(set), t: key === 'death' ? 3.5 : 2.8, max: key === 'death' ? 3.5 : 2.8 };
+  }
+
+  drawSpeech(ctx) {
+    const s = this.speech;
+    if (!s) return;
+    const a = U.clamp(Math.min(s.t, s.max - s.t) / 0.25, 0, 1);
+    const x = s.boss.x, y = s.boss.y - s.boss.radius - 40;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.font = 'italic 14px "Iowan Old Style", Palatino, Georgia, serif';
+    const w = ctx.measureText(s.text).width + 22;
+    ctx.fillStyle = 'rgba(10,8,14,.88)';
+    ctx.fillRect(x - w / 2, y - 22, w, 30);
+    ctx.strokeStyle = s.boss.def.color;
+    ctx.strokeRect(x - w / 2, y - 22, w, 30);
+    ctx.beginPath(); ctx.moveTo(x - 6, y + 8); ctx.lineTo(x, y + 16); ctx.lineTo(x + 6, y + 8); ctx.fill();
+    ctx.fillStyle = '#f0e6d2';
+    ctx.textAlign = 'center';
+    ctx.fillText(s.text, x, y - 2);
+    ctx.restore();
   }
 
   /* Shrine summons used to drop guardians on a bare ring, which could put
      them inside a wall or outside the world — where the spatial hash indexes
      them into a cell nothing ever queries, so they hang unreachable. This
-     walks inward and then spirals until it finds real, walkable floor. */
-  safeSpawnNear(x, y, radius, angle) {
+     walks inward and then spirals until it finds real, walkable floor.
+
+     Update 3.0: "walkable" now means the whole body fits (not just its
+     centre point), and the spot must be in sight of where it was asked for —
+     otherwise a guardian could be placed in the next corridor over, on the
+     far side of a wall, which read as it having walked through the wall. */
+  safeSpawnNear(x, y, radius, angle, bodyR = 16) {
     const d = this.dungeon;
     const maxX = (d.w - 1) * TILE, maxY = (d.h - 1) * TILE;
     const ok = (px, py) =>
-      px > TILE && py > TILE && px < maxX && py < maxY && !d.isSolidAt(px, py);
+      px > TILE && py > TILE && px < maxX && py < maxY
+      && bodyFits(d, px, py, bodyR) && d.lineOfSight(x, y, px, py);
 
     // Preferred: on the requested ring, sweeping angles then closing inward.
     for (let ring = 0; ring < 8; ring++) {
@@ -1261,13 +1546,19 @@ class Game {
        solid tile it was asked to avoid — so a guardian could still be walled
        in. Searching tile centres cannot fail on a connected map. */
     const cx = Math.floor(x / TILE), cy = Math.floor(y / TILE);
-    for (let rad = 1; rad <= 14; rad++) {
-      for (let ty = cy - rad; ty <= cy + rad; ty++) {
-        for (let tx = cx - rad; tx <= cx + rad; tx++) {
-          // Perimeter of this square ring only.
-          if (Math.abs(ty - cy) !== rad && Math.abs(tx - cx) !== rad) continue;
-          if (!d.inBounds(tx, ty) || d.isSolidTile(tx, ty)) continue;
-          return { x: (tx + 0.5) * TILE, y: (ty + 0.5) * TILE };
+    // Two passes: a spot the whole body fits in sight of the origin, then
+    // (only if that fails) any floor tile at all.
+    for (const strict of [true, false]) {
+      for (let rad = 1; rad <= 14; rad++) {
+        for (let ty = cy - rad; ty <= cy + rad; ty++) {
+          for (let tx = cx - rad; tx <= cx + rad; tx++) {
+            // Perimeter of this square ring only.
+            if (Math.abs(ty - cy) !== rad && Math.abs(tx - cx) !== rad) continue;
+            if (!d.inBounds(tx, ty) || d.isSolidTile(tx, ty)) continue;
+            const px = (tx + 0.5) * TILE, py = (ty + 0.5) * TILE;
+            if (strict && !(bodyFits(d, px, py, Math.min(bodyR, TILE * 0.49)) && d.lineOfSight(x, y, px, py))) continue;
+            return { x: px, y: py };
+          }
         }
       }
     }
@@ -1281,12 +1572,21 @@ class Game {
        pushed out — resolveAxis is a no-op at zero velocity — so it would sit
        there permanently, indexed into a spatial cell you can never reach.
        Snap it onto real floor before it ever enters the world. */
-    if (this.dungeon && this.dungeon.isSolidAt(x, y)) {
-      const safe = this.safeSpawnNear(x, y, 34, U.rand(0, Math.PI * 2));
+    const bodyR = ENEMY_TYPES[type].radius * (elite ? 1.25 : 1);
+    if (this.dungeon && !ENEMY_TYPES[type].boss && !bodyFits(this.dungeon, x, y, bodyR)) {
+      const safe = this.safeSpawnNear(x, y, 34, U.rand(0, Math.PI * 2), bodyR + 1);
       x = safe.x; y = safe.y;
     }
     const e = new Enemy(type, x, y, threat, elite);
     e.room = room;
+    // Update 3.0: per-map difficulty (Tripolisis is a little gentler).
+    const diff = Maps.byNumber(this.mapNumber).difficulty;
+    if (diff && !e.def.boss && !e.def.noScale) {
+      e.maxHp = Math.max(1, Math.round(e.maxHp * diff.hp));
+      e.hp = e.maxHp;
+      e.dmgScale *= diff.dmg;
+      e.shotMul = diff.dmg;
+    }
     if (room) room.alive = (room.alive || 0) + 1;
     this.enemies.push(e);
     return e;
@@ -1312,12 +1612,210 @@ class Game {
     }
   }
 
+  /* The player's breadcrumb trail — what companions and minions track when
+     they lose sight of you (see Follow in npcs.js). */
+  updateTrail() {
+    const p = this.player;
+    const last = this.trail[this.trail.length - 1];
+    if (!last || U.dist2(last.x, last.y, p.x, p.y) > 36 * 36) {
+      this.trail.push({ x: p.x, y: p.y });
+      if (this.trail.length > 80) this.trail.shift();
+    }
+  }
+
+  /* ---------------- Update 3.0: inventory ----------------
+     I opens it. The page shows one character at a time — you first, then
+     each companion behind the arrow on the right. Click a bag item to put it
+     on whoever is showing; click a filled slot to take it off. */
+
+  menuCharacters() {
+    return [this.player, ...this.companions.filter(c => !c.dead)];
+  }
+
+  openInventory() {
+    if (this.state !== 'playing' || this.cinematic || this.rhythm) return;
+    this.state = 'inventory';
+    this.invView = 0;
+    this.player.charging = false;
+    for (const k of ['left', 'right', 'up', 'down']) this.input[k] = 0;
+    this.input.mouseL = this.input.mouseR = false;
+    document.getElementById('inventory').classList.remove('hidden');
+    this.renderInventory();
+  }
+
+  closeMenus() {
+    document.getElementById('inventory').classList.add('hidden');
+    document.getElementById('shop').classList.add('hidden');
+    this.shopProp = null;
+    this.state = 'playing';
+    this.hudCache = {};
+  }
+
+  cycleInventory(dir) {
+    const chars = this.menuCharacters();
+    this.invView = (this.invView + dir + chars.length) % chars.length;
+    this.renderInventory();
+  }
+
+  itemCard(item, extra = '') {
+    const r = Gear.rarity(item);
+    const slot = ITEM_SLOTS.find(s => s.id === item.slot);
+    return `<div class="item-ic" style="color:${r.color}">${slot.icon}</div>`
+      + `<div class="item-tx"><b style="color:${r.color}">${item.name}</b>`
+      + `<span>${item.desc}</span>${extra}</div>`;
+  }
+
+  renderInventory() {
+    const p = this.player;
+    const chars = this.menuCharacters();
+    if (this.invView >= chars.length) this.invView = 0;
+    const who = chars[this.invView];
+    const isPlayer = who === p;
+
+    document.getElementById('invName').textContent = isPlayer
+      ? `You — ${p.cls.className}` : `${who.def.name} · Lv ${who.level}`;
+    document.getElementById('invSub').textContent = isPlayer
+      ? `Level ${p.level} · ${p.weaponName}`
+      : `${Math.ceil(who.hp)} / ${who.maxHp} HP · ${who.def.skill ? who.def.skill.name + ' — ' + who.def.skill.desc : ''}`;
+    document.getElementById('invCoins').textContent = String(p.gold);
+    document.getElementById('invPage').textContent = chars.length > 1 ? `${this.invView + 1} / ${chars.length}` : '';
+    document.getElementById('invPrev').classList.toggle('hidden', chars.length < 2);
+    document.getElementById('invNext').classList.toggle('hidden', chars.length < 2);
+
+    // The four slots.
+    const slots = document.getElementById('invSlots');
+    slots.replaceChildren();
+    for (const s of ITEM_SLOTS) {
+      const id = who.equip[s.id];
+      const item = id ? Gear.get(id) : null;
+      const el = document.createElement('button');
+      el.className = 'inv-slot' + (item ? ' filled' : '');
+      el.innerHTML = `<div class="slot-name">${s.name} <i>${s.stat}</i></div>`
+        + (item ? this.itemCard(item) : `<div class="slot-empty">${s.icon} empty</div>`);
+      if (item) el.onclick = () => { Gear.unequip(p, who, s.id); this.audio.blip(500, 0.06, 0.06, 'triangle'); this.renderInventory(); };
+      slots.appendChild(el);
+    }
+
+    // Stat readout.
+    const pct = (v) => `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%`;
+    const stats = isPlayer ? [
+      ['Health', `${Math.ceil(p.hp)} / ${p.maxHp}`],
+      ['Defense', pct(p.equipDef)],
+      ['Speed', pct(p.equipSpeed)],
+      ['Damage', pct(p.equipDmg)],
+      ['Critical', `${Math.round((0.12 + p.critBonus) * 100)}%`],
+      ...(p.curse ? [['Curse', p.curse.linger > 0 ? `lifts in ${p.curse.linger.toFixed(1)}s` : 'HALVED']] : []),
+    ] : [
+      ['Health', `${Math.ceil(who.hp)} / ${who.maxHp}`],
+      ['Level', `${who.level}  (${Math.floor(who.xp)} / ${who.xpNext} xp)`],
+      ['Defense', pct(who.gearDef)],
+      ['Speed', pct(who.gearSpeed)],
+      ['Damage', pct(who.dmgMul - 1)],
+    ];
+    document.getElementById('invStats').innerHTML =
+      stats.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+
+    // The bag.
+    const bag = document.getElementById('invBag');
+    bag.replaceChildren();
+    if (!p.bag.length) {
+      bag.innerHTML = '<div class="bag-empty">Your bag is empty. The Hollow Peddler ($ on the map) sells accessories.</div>';
+    }
+    const sorted = p.bag.slice().sort((a, b) => Gear.get(a).slot.localeCompare(Gear.get(b).slot) || Gear.get(a).price - Gear.get(b).price);
+    for (const id of sorted) {
+      const item = Gear.get(id);
+      const el = document.createElement('button');
+      el.className = 'bag-item' + (item.cursed ? ' cursed' : '');
+      const warn = !isPlayer && item.playerOnly ? '<em>no effect on companions</em>'
+        : !isPlayer && item.cursed ? '<em>they will turn on you</em>' : '';
+      el.innerHTML = this.itemCard(item, warn);
+      el.onclick = () => {
+        if (!isPlayer && item.cursed
+          && !confirm(`Put the Cursed Totem on ${who.def.name}? They will turn on you.`)) return;
+        Gear.equip(p, who, id);
+        this.audio.blip(820, 0.08, 0.07, 'triangle');
+        if (isPlayer && item.cursed) this.toast('The totem bites. Half your strength is gone until you take it off.', 4);
+        this.renderInventory();
+      };
+      bag.appendChild(el);
+    }
+  }
+
+  /* ---------------- Update 3.0: the shop ---------------- */
+
+  openShop(prop) {
+    this.state = 'shop';
+    this.shopProp = prop;
+    this.player.charging = false;
+    for (const k of ['left', 'right', 'up', 'down']) this.input[k] = 0;
+    this.input.mouseL = this.input.mouseR = false;
+    document.getElementById('shop').classList.remove('hidden');
+    this.renderShop();
+    this.audio.blip(660, 0.12, 0.08, 'triangle');
+  }
+
+  renderShop() {
+    const p = this.player;
+    const prop = this.shopProp;
+    document.getElementById('shopCoins').textContent = String(p.gold);
+    const list = document.getElementById('shopList');
+    list.replaceChildren();
+    if (!prop.stock.length) list.innerHTML = '<div class="bag-empty">Sold out. Try another peddler.</div>';
+    for (const id of prop.stock) {
+      const item = Gear.get(id);
+      const afford = p.gold >= item.price;
+      const el = document.createElement('button');
+      el.className = 'bag-item shop-item' + (afford ? '' : ' poor') + (item.cursed ? ' cursed' : '');
+      el.innerHTML = this.itemCard(item, `<em class="price">◈ ${item.price}</em>`);
+      el.onclick = () => {
+        if (p.gold < item.price) { this.audio.blip(160, 0.12, 0.08, 'sawtooth'); return; }
+        p.gold -= item.price;
+        p.bag.push(id);
+        prop.stock.splice(prop.stock.indexOf(id), 1);
+        this.audio.blip(940, 0.08, 0.08, 'triangle');
+        this.audio.blip(1320, 0.12, 0.06, 'triangle');
+        this.renderShop();
+      };
+      list.appendChild(el);
+    }
+  }
+
   /* ---------------- update ---------------- */
 
   update(dt) {
     if (this.state !== 'playing') { this.fx.update(dt); return; }
     this.updateRoulette(dt);
     this.updateTempest(dt);
+    // A boss intro holds the world while the camera does its work.
+    if (this.cinematic) {
+      this.updateCinematic(dt);
+      this.fx.update(dt);
+      this.updateHud();
+      return;
+    }
+    if (this.speech) { this.speech.t -= dt; if (this.speech.t <= 0) this.speech = null; }
+    if (this.pendingDescend) {
+      this.pendingDescend.t -= dt;
+      if (this.pendingDescend.t <= 0) {
+        const last = this.pendingDescend.isLast;
+        this.pendingDescend = null;
+        if (last) this.endRun(true); else this.descend();
+        return;
+      }
+    }
+    if (this.pendingFinal) {
+      this.pendingFinal.t -= dt;
+      if (this.pendingFinal.t <= 0) {
+        const pf = this.pendingFinal;
+        const fb = Maps.byNumber(this.mapNumber).finalBoss;
+        this.pendingFinal = null;
+        this.boss = this.spawnEnemy(fb.type, pf.x, pf.y, pf.tier, false);
+        this.boss.maxHp = fb.hp; this.boss.hp = fb.hp;
+        this.boss.aggro = true;
+        this.startCinematic(this.boss);
+        return;
+      }
+    }
     // The rhythm break halts all spatial movement while it is up.
     if (this.rhythm) {
       this.updateRhythm(dt);
@@ -1341,6 +1839,7 @@ class Game {
     this.mouseWorld.y = this.mouse.y + this.cam.y;
 
     this.player.update(dt, this);
+    this.updateTrail();
 
     // Lazily wake rooms as the player approaches them. Cleared rooms stay
     // cleared, including across a save and resume.
@@ -1379,6 +1878,8 @@ class Game {
 
     for (let i = this.companions.length - 1; i >= 0; i--) {
       const c = this.companions[i];
+      // A companion wearing the Cursed Totem does not stay a companion.
+      if (!c.dead && c.equip.ring === 'cursed-totem') this.companionTurns(c);
       c.update(dt, this);
       if (c.dead) this.companions.splice(i, 1);
     }
@@ -1415,6 +1916,17 @@ class Game {
       if (m.hostile) {
         if (U.dist(m.x, m.y, this.player.x, this.player.y) < m.radius) {
           this.player.takeHit(m.aoeDamage, this, { x: m.x, y: m.y, kind: 'red', source: m.source });
+        }
+        continue;
+      }
+
+      // The Ranger's grenade: every enemy in the blast rolls its own damage.
+      if (m.perEnemy) {
+        this.fx.addShake(16);
+        this.impactFreeze(0.08);
+        for (const e of this.enemyHash.query(m.x, m.y, m.radius + 30, this._q)) {
+          if (e.dead || U.dist(m.x, m.y, e.x, e.y) > m.radius + e.radius) continue;
+          e.takeDamage(U.randi(m.perEnemy[0], m.perEnemy[1] + 1) * m.powerMul, this, m.x, m.y, 420, false);
         }
         continue;
       }
@@ -1529,7 +2041,7 @@ class Game {
         cache.slot = key;
         slotEl.classList.remove('hidden');
         document.getElementById('slotName').textContent =
-          cd > 0 ? `${s.name} ${cd.toFixed(1)}s` : s.name;
+          cd > 0 ? `${s.name} ${cd >= 60 ? Math.floor(Math.ceil(cd) / 60) + ":" + String(Math.ceil(cd) % 60).padStart(2, "0") : Math.ceil(cd) + "s"}` : s.name;
         document.getElementById('slotIcon').textContent = s.icon;
         slotEl.style.borderColor = cd > 0 ? 'rgba(255,255,255,.1)' : s.color;
         slotEl.classList.toggle('spent', cd > 0);
@@ -1539,12 +2051,16 @@ class Game {
       slotEl.classList.add('hidden');
     }
 
-    const prop = this.state === 'playing' ? this.nearbyProp() : null;
+    const john = this.state === 'playing' && !this.cinematic ? this.nearbyJohn() : null;
+    const prop = this.state === 'playing' && !john && !this.cinematic ? this.nearbyProp() : null;
     const promptEl = document.getElementById('prompt');
-    const key = prop ? prop.type + (prop.rich ? '+' : '') + this.shrinesDown : '';
+    const key = john ? 'john' : prop ? prop.type + (prop.rich ? '+' : '') + this.shrinesDown : '';
     if (cache.prompt !== key) {
       cache.prompt = key;
-      if (prop) {
+      if (john) {
+        promptEl.innerHTML = '<b>E</b> — provoke <b>John Space</b> (survive 2:00 without hitting back)';
+        promptEl.classList.remove('hidden');
+      } else if (prop) {
         // Built lazily: an eager object literal would evaluate every branch,
       // and prop.shrine only exists on class shrines.
       const label = (() => {
@@ -1559,6 +2075,7 @@ class Game {
             : `touch the <b>${prop.shrine.name}</b> (not yours)`;
           case 'yellowshrine': return 'gamble at the <b>yellow shrine</b>';
           case 'corruptshrine': return 'disturb the <b>corrupted shrine</b>';
+          case 'merchant': return 'trade with the <b>Hollow Peddler</b>';
           case 'gate': return this.shrinesDown >= this.dungeon.redShrineCount
             ? 'open the <b>gate</b>'
             : `the gate is <b>bound</b> — ${this.shrinesDown}/${this.dungeon.redShrineCount} shrines`;
@@ -1622,8 +2139,9 @@ class Game {
     this.drawPlayer(ctx);
     for (const pr of this.projectiles) pr.draw(ctx);
     this.fx.drawParticles(ctx);
-    this.drawReticle(ctx);
+    if (!this.cinematic) this.drawReticle(ctx);
     this.fx.drawTexts(ctx);
+    this.drawSpeech(ctx);
 
     ctx.restore();
 
@@ -1899,6 +2417,39 @@ class Game {
           }
         }
 
+      } else if (prop.type === 'merchant') {
+        // The Hollow Peddler: a hooded figure behind a little stall, lantern lit.
+        ctx.fillStyle = 'rgba(0,0,0,.38)';
+        ctx.beginPath(); ctx.ellipse(x, y + 14, 26, 8, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#4a3a5c';
+        ctx.beginPath();
+        ctx.moveTo(x - 10, y + 6); ctx.lineTo(x - 7, y - 20); ctx.lineTo(x + 7, y - 20); ctx.lineTo(x + 10, y + 6);
+        ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y - 22, 7.5, Math.PI, 0); ctx.fill();
+        ctx.fillStyle = '#ffd479';
+        ctx.fillRect(x - 3.5, y - 24, 2, 2); ctx.fillRect(x + 1.5, y - 24, 2, 2);
+        // Stall.
+        ctx.fillStyle = '#6b4a2c';
+        ctx.fillRect(x - 22, y + 2, 44, 12);
+        ctx.fillStyle = '#8a6238';
+        ctx.fillRect(x - 24, y, 48, 4);
+        for (let i = 0; i < 4; i++) {
+          ctx.fillStyle = ['#7ea8ff', '#ffd479', '#c07bff', '#ff8a6a'][i];
+          ctx.beginPath(); ctx.arc(x - 15 + i * 10, y - 2, 3, 0, Math.PI * 2); ctx.fill();
+        }
+        // Lantern.
+        const fl = 0.75 + Math.sin(t * 7) * 0.12;
+        ctx.globalAlpha = fl;
+        ctx.shadowBlur = 20; ctx.shadowColor = '#ffd479';
+        ctx.fillStyle = '#ffe9a8';
+        ctx.beginPath(); ctx.arc(x + 18, y - 14, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = '#ffd479';
+        ctx.font = '700 12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('$', x, y - 36 + Math.sin(t * 2) * 2);
+
       } else if (prop.type === 'gate') {
         const done = this.bossDefeated;
         ctx.strokeStyle = done ? '#4a4a56' : '#c8452f';
@@ -2001,6 +2552,40 @@ class Game {
   drawImpactMarkers(ctx) {
     for (const m of this.impacts) {
       const t = U.clamp(m.t / m.delay, 0, 1);
+      if (m.grenade) {
+        // Lobbed in an arc over the first 0.45s, then it sits and ticks.
+        const fly = U.clamp(m.t / 0.45, 0, 1);
+        const gx = U.lerp(m.fromX, m.x, fly), gy = U.lerp(m.fromY, m.y, fly) - Math.sin(fly * Math.PI) * 60;
+        const left = Math.max(0, m.delay - m.t);
+        const blink = left < 1 ? Math.sin(this.time * 40) > 0 : Math.sin(this.time * 10) > 0;
+        ctx.save();
+        if (fly >= 1) {
+          ctx.globalAlpha = 0.25 + t * 0.35;
+          ctx.strokeStyle = '#ffb347';
+          ctx.setLineDash([8, 6]);
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#3f4a2c';
+        ctx.beginPath(); ctx.arc(gx, gy, 6.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#8a8f7a';
+        ctx.fillRect(gx - 2, gy - 9, 4, 4);
+        ctx.fillStyle = blink ? '#ff3b1f' : '#5a1a10';
+        ctx.beginPath(); ctx.arc(gx + 2, gy - 2, 1.8, 0, Math.PI * 2); ctx.fill();
+        if (fly >= 1) {
+          ctx.font = '700 15px system-ui';
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(0,0,0,.85)';
+          ctx.strokeText(left.toFixed(1), gx, gy - 16);
+          ctx.fillStyle = left < 1 ? '#ff6b52' : '#ffd479';
+          ctx.fillText(left.toFixed(1), gx, gy - 16);
+        }
+        ctx.restore();
+        continue;
+      }
       ctx.save();
       ctx.globalAlpha = 0.35 + t * 0.45;
       ctx.strokeStyle = m.color;
@@ -2070,6 +2655,14 @@ class Game {
       ctx.shadowColor = e.def.color;
 
       if (e.def.palette) {
+        // During the intro the boss rises out of the floor.
+        const s = e.introScale === undefined ? 1 : e.introScale;
+        if (s < 1) {
+          ctx.translate(x, y + e.radius);
+          ctx.scale(0.4 + s * 0.6, s);
+          ctx.translate(-x, -(y + e.radius));
+          ctx.globalAlpha = 0.3 + s * 0.7;
+        }
         this.drawBossForm(ctx, e, x, y, body);
       } else {
         // Every ordinary creature now has its own silhouette and its own
@@ -2206,10 +2799,31 @@ class Game {
     // A braced Tanker sees no red: the shield makes everything parryable,
     // so the indicator has to say so before the blow lands, not after.
     const red = kind === 'red' && !this.player.isBlocking();
-    const col = red ? '#ff5a3c' : '#8fd4ff';
+    const heavy = kind === 'heavy';
+    // Against a boss (or John's trial) a blue cannot be parried, so it is
+    // drawn pale rather than in the parry blue.
+    const lightOnly = kind === 'blue' && (e.def.boss || e.trial);
+    const col = heavy ? '#ffd479' : red ? '#ff5a3c' : lightOnly ? '#b9c3d6' : '#8fd4ff';
     const r = e.radius;
 
     ctx.save();
+    // The cop car paints its whole lane: that is the entire dodge.
+    if (atk && atk.def.lane) {
+      const len = atk.def.chargeSpeed * atk.def.active;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(atk.angle);
+      ctx.globalAlpha = 0.12 + progress * 0.22;
+      ctx.fillStyle = '#ff5a3c';
+      ctx.fillRect(0, -r * 1.1, len, r * 2.2);
+      ctx.globalAlpha = 0.5 + progress * 0.4;
+      ctx.strokeStyle = '#ffd479';
+      ctx.setLineDash([12, 10]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, -r * 1.1, len, r * 2.2);
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
     // Closing ring
     const ringR = U.lerp(r * 3.4, r * 1.05, progress);
     ctx.globalAlpha = 0.35 + progress * 0.5;
@@ -2248,6 +2862,18 @@ class Game {
       ctx.font = '700 13px system-ui';
       ctx.textAlign = 'center';
       ctx.fillText('!', x, y - r - 16);
+    }
+    // HEAVY: the one a boss lets you parry. Make it impossible to miss.
+    if (heavy) {
+      ctx.globalAlpha = 0.75 + Math.sin(this.time * 18) * 0.25;
+      ctx.fillStyle = '#ffd479';
+      ctx.shadowBlur = 12; ctx.shadowColor = '#ffb347';
+      ctx.font = '800 13px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('HEAVY — PARRY', x, y - r - 18);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#fff1c9';
+      ctx.beginPath(); ctx.arc(x, y, r * 1.05 + 4, 0, Math.PI * 2 * progress); ctx.stroke();
     }
     ctx.restore();
   }
@@ -2311,6 +2937,58 @@ class Game {
       ctx.beginPath();
       ctx.arc(x, y, 21, p.aim - 1.05, p.aim + 1.05);
       ctx.stroke();
+      ctx.restore();
+    }
+
+    // Ricochet roll: the timing ring. Green = press M1 now, yellow = missed,
+    // and it flashes blue on a perfect bounce.
+    if (p.roll) {
+      const r = p.roll;
+      const col = r.flash > 0 ? '#4fa8ff' : r.missed ? '#ffd479' : r.queued ? '#8fffb0'
+        : r.window ? '#3dff7a' : 'rgba(143,168,200,.55)';
+      ctx.save();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = r.window || r.flash > 0 ? 4 : 2;
+      ctx.shadowBlur = r.window || r.flash > 0 ? 16 : 0;
+      ctx.shadowColor = col;
+      ctx.beginPath(); ctx.arc(x, y, 24 + (r.flash > 0 ? (0.3 - r.flash) * 60 : 0), 0, Math.PI * 2); ctx.stroke();
+      // Arrow showing the roll direction.
+      ctx.fillStyle = col;
+      ctx.translate(x + Math.cos(r.dir) * 34, y + Math.sin(r.dir) * 34);
+      ctx.rotate(r.dir);
+      ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-5, -6); ctx.lineTo(-5, 6); ctx.closePath(); ctx.fill();
+      ctx.restore();
+      if (r.window && !r.queued && !r.missed) {
+        ctx.save();
+        ctx.fillStyle = '#3dff7a';
+        ctx.font = '800 12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('M1!', x, y - 34);
+        ctx.restore();
+      }
+    }
+
+    // Double Sword slice: a bright streak along the cut.
+    if (p.dashT > 0 && p.dashStrikeDmg > 0 && p.cls.id === 'melee') {
+      ctx.save();
+      ctx.strokeStyle = '#fff1c9';
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = 5;
+      ctx.shadowBlur = 16; ctx.shadowColor = '#ffe6b0';
+      ctx.beginPath();
+      ctx.moveTo(x - Math.cos(p.dashDir) * 60, y - Math.sin(p.dashDir) * 60);
+      ctx.lineTo(x + Math.cos(p.dashDir) * 14, y + Math.sin(p.dashDir) * 14);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // The Cursed Totem shows on you: a slow red pulse.
+    if (p.curse) {
+      ctx.save();
+      ctx.globalAlpha = 0.25 + Math.sin(this.time * 3) * 0.12;
+      ctx.strokeStyle = '#ff3b1f';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 19, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
@@ -2439,7 +3117,7 @@ class Game {
 
     /* Dedicated boss bar. Every boss gets one, named and titled, with a
        lagging "damage taken" ghost behind the fill so big hits read. */
-    if (this.boss && !this.boss.dead) {
+    if (this.boss && !this.boss.dead && !this.cinematic) {
       const b = this.boss;
       const w = Math.min(620, this.vw * 0.58), h = 17;
       const x = (this.vw - w) / 2, y = this.vh - 78;
@@ -2478,7 +3156,7 @@ class Game {
     const j = this.johnSpace;
     if (j && !j.dead) {
       const w = Math.min(420, this.vw * 0.4), h = 12;
-      const x = (this.vw - w) / 2, y = 34;
+      const x = (this.vw - w) / 2, y = 132;   // clear of the HUD chips and the toast
       const frac = U.clamp(j.hp / j.maxHp, 0, 1);
       ctx.fillStyle = 'rgba(0,0,0,.75)';
       ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
@@ -2490,14 +3168,33 @@ class Game {
       ctx.fillStyle = '#f0e6d2';
       ctx.font = '600 11px system-ui';
       ctx.textAlign = 'center';
-      ctx.fillText(j.enraged ? 'JOHN SPACE — PROVOKED' : 'JOHN SPACE — NEUTRAL', this.vw / 2, y - 6);
-      if (!j.enraged) {
+      ctx.fillText(j.enraged ? 'JOHN SPACE — PROVOKED' : j.trial ? 'JOHN SPACE — THE TRIAL' : 'JOHN SPACE — NEUTRAL',
+        this.vw / 2, y - 6);
+      if (j.trial) {
+        // The trial clock: big, because it is the whole fight.
+        const left = Math.max(0, j.def.trialRequired - j.trialT);
+        const m = Math.floor(left / 60), s = Math.floor(left % 60);
+        ctx.fillStyle = '#ffd479';
+        ctx.font = '700 22px system-ui';
+        ctx.fillText(`${m}:${String(s).padStart(2, '0')}`, this.vw / 2, y + h + 26);
+        ctx.fillStyle = 'rgba(240,230,210,.6)';
+        ctx.font = '10px system-ui';
+        ctx.fillText('survive — do NOT hit him back · parry only his gold HEAVIES', this.vw / 2, y + h + 42);
+        if (j.chain) {
+          ctx.fillStyle = '#ffd479';
+          ctx.font = '700 13px system-ui';
+          ctx.fillText(`PARRY CHAIN ${j.chain.count} — ${j.chain.left} MORE`, this.vw / 2, y + h + 60);
+        }
+      } else if (!j.enraged) {
         const left = Math.max(0, j.def.peaceRequired - j.peaceT);
         ctx.fillStyle = 'rgba(240,230,210,.55)';
         ctx.font = '10px system-ui';
-        ctx.fillText(`leave him alone: ${Math.ceil(left)}s`, this.vw / 2, y + h + 13);
+        ctx.fillText(`leave him alone: ${Math.ceil(left)}s  ·  or press E beside him to fight for it`, this.vw / 2, y + h + 13);
       }
     }
+
+    this.drawStatusEffects(ctx);
+    this.drawCompanionTrackers(ctx);
 
     this.drawRhythm(ctx);
 
@@ -2565,7 +3262,69 @@ class Game {
     }
 
     this.drawRoulette(ctx);
+    this.drawCinematic(ctx);
     ctx.restore();
+  }
+
+  /* Timed debuffs under the bars, so a drained mana pool never looks like
+     a bug. */
+  drawStatusEffects(ctx) {
+    const p = this.player;
+    const tags = [];
+    if (p.curse) tags.push([p.curse.linger > 0 ? `CURSE lifts ${p.curse.linger.toFixed(1)}s` : 'CURSED TOTEM — HALVED', '#ff6b52']);
+    if (p.hpCap) tags.push([`HEALTH HELD 65% · ${p.hpCap.t.toFixed(1)}s`, '#c4e86b']);
+    if (p.manaLockT > 0) tags.push([`MANA DRAINED · ${p.manaLockT.toFixed(1)}s`, '#7b8cff']);
+    if (p.dashLockT > 0) tags.push([`DASH LOCKED · ${p.dashLockT.toFixed(1)}s`, '#ffe6b0']);
+    if (!tags.length) return;
+    ctx.save();
+    ctx.font = '700 10px system-ui';
+    ctx.textAlign = 'left';
+    tags.forEach(([txt, col], i) => {
+      const y = 112 + i * 17;
+      const w = ctx.measureText(txt).width + 14;
+      ctx.fillStyle = 'rgba(0,0,0,.6)';
+      ctx.fillRect(88, y - 11, w, 15);
+      ctx.fillStyle = col;
+      ctx.fillText(txt, 95, y);
+    });
+    ctx.restore();
+  }
+
+  /* Trackers: an arrow at the screen edge for every companion and minion
+     that has fallen out of view, in its own colour, so you always know where
+     your people are. */
+  drawCompanionTrackers(ctx) {
+    if (this.state !== 'playing') return;
+    const followers = [...this.companions, ...this.minions].filter(f => !f.dead);
+    for (const f of followers) {
+      const sx = f.x - this.cam.x, sy = f.y - this.cam.y;
+      if (sx > 20 && sx < this.vw - 20 && sy > 20 && sy < this.vh - 20) continue;
+      const a = Math.atan2(sy - this.vh / 2, sx - this.vw / 2);
+      const ring = Math.min(this.vw, this.vh) * 0.44;
+      const px = this.vw / 2 + Math.cos(a) * ring, py = this.vh / 2 + Math.sin(a) * ring;
+      const comp = f instanceof Companion;
+      const size = comp ? 9 : 6;
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = f.def.color;
+      ctx.beginPath(); ctx.arc(0, 0, size * 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.rotate(a);
+      ctx.beginPath();
+      ctx.moveTo(size + 6, 0); ctx.lineTo(size - 2, -size * 0.6); ctx.lineTo(size - 2, size * 0.6);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+      if (comp) {
+        ctx.save();
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = f.def.color;
+        ctx.font = '600 9px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${f.def.name.replace('The ', '')} ${Math.round(U.dist(f.x, f.y, this.player.x, this.player.y) / TILE)}m`,
+          px, py + 18);
+        ctx.restore();
+      }
+    }
   }
 
   /* ---------------- maps ---------------- */
@@ -2642,6 +3401,17 @@ class Game {
         : e.elite ? '#ffb347' : 'rgba(225,85,60,.9)';
       const s = e.def.boss ? 6 : (e.guardian && !e.guardian.used) ? 5 : 3;
       c.fillRect((e.x / TILE - pcx + span / 2) * scale - s / 2, (e.y / TILE - pcy + span / 2) * scale - s / 2, s, s);
+    }
+
+    // Your people, in their own colours — clamped to the edge if off the map.
+    for (const f of [...this.companions, ...this.minions]) {
+      if (f.dead) continue;
+      const comp = f instanceof Companion;
+      const fx2 = U.clamp((f.x / TILE - pcx + span / 2) * scale, 4, size - 4);
+      const fy2 = U.clamp((f.y / TILE - pcy + span / 2) * scale, 4, size - 4);
+      c.fillStyle = f.def.color;
+      c.beginPath(); c.arc(fx2, fy2, comp ? 3.4 : 2.2, 0, Math.PI * 2); c.fill();
+      if (comp) { c.strokeStyle = '#ffffff'; c.lineWidth = 1; c.stroke(); }
     }
 
     c.fillStyle = '#ffffff';

@@ -15,6 +15,31 @@ you cannot carry both.
 The five share almost nothing: separate stat lines, separate resources, separate
 level-up perk pools (8 shared boons + 6 exclusive to each class).
 
+*Developed by Neil Uaine.*
+
+## Update 3.0 at a glance
+
+- **Inventory (`I`) and shop.** Four gear slots — Armor (defense), Boots
+  (speed), Ring (one specific buff), Gauntlets (damage) — on you *and* on each
+  companion; the arrow on the right of the inventory flips to their pages.
+  100 accessories in all, sold by the Hollow Peddler (`$` on the map) and
+  occasionally found in chests. One of them is the **Cursed Totem**.
+- **Bosses** now have **100,000 HP** (Tripolisis) and **200,000 HP**
+  (Sarapolis), fight in **combos**, and only their gold **HEAVY** attacks can
+  be parried. Each gets an intro and lines. Judgement now actually appears
+  after the Sun God.
+- **John Space** can be provoked with `E` into a two-minute trial with a
+  parry-chain mechanic.
+- **Six new enemies**, including a cop car that tries to run you over.
+- **Companions** level up, have unique skills, wear gear, follow you properly,
+  and are limited to one of each kind per dungeon.
+- Class reworks: Sword / Double Sword, the 85-second grenade, slingshot
+  deflects, Bloat / Bone Brute / Jarona Necklace, Earthquake and Tornado, and
+  the Tanker's Ricochet mode.
+- Fixes: red-shrine guardians no longer clip through walls; companions and
+  minions no longer get lost; killing a boss that levels you up no longer
+  stalls the descent.
+
 ### The wheel — `R`
 
 **Every** class now carries a loadout on `R`, not just the casters. **Tap** to cycle
@@ -27,18 +52,35 @@ a scramble.
 | | Cost | Cooldown | |
 |---|---|---|---|
 | **Thrall** | 14 | 2s | 10 damage a swing, crumbles after 15 seconds |
-| **Bloat** | 22 | 10s | Runs in and detonates for 30 in a wide circle |
-| **Bone Brute** | 40 | 30s | 200 HP, one at a time, and enemies attack *it* instead of you |
-| **Jarona** | 18 | 2s | A shouted **3-hit bounce combo**, ricocheting between targets, outlined in blue |
+| **Bloat** | 22 | 10s | Detonates for 40 across a **10×10-tile** area. Summoning it drains **all** your mana for 5s and holds your health at **65%** for 5s (the trimmed health comes back) |
+| **Bone Brute** | 40 | 30s | 200 HP, one at a time, enemies attack *it* instead of you, and it **bashes** for 100 |
+| **Jarona** | 18 | 2s | A shouted **3-hit bounce combo**. Wear the **Jarona Necklace** (a ring) and every bounce is a **super dash** for 100–200 |
+
+**Melee blades** — `R` swaps between **Sword** (the usual) and **Double Sword**:
+slower on your feet, +10 health, and a heavy that **slices straight through**
+a line of enemies — after which your dash is locked for 3 seconds.
+
+**Ranger ordnance** — `R` swaps the slingshot for a **Hand Grenade**: one
+every **1:25**, a **3 second** visible fuse, and **100–500** damage rolled
+separately for every enemy in a **5×5-tile** blast. Slingshot pebbles with the
+Ricochet perk also kick off walls, and **dashing into one (or parrying next to
+it) deflects it** back out along your aim at 1.9x speed and 1.6x damage.
+
+**Tanker brace modes** — Heavy Dash, Heavy Slam and **Ricochet**: the heavy
+rolls you forward, and the ring around you turns **green** as you are about to
+meet an enemy or a wall. Click `LMB` then and the impact becomes a **blue
+shockwave** that bounces you off to keep rolling, as long as you keep timing
+it. Click when it is not green and it turns **yellow** and costs 50 stamina.
+Click nothing and you just bump to a stop. Taking a hit ends the roll.
 
 **Mage elements** — each has a light cast and a charged heavy:
 
 | | Light | Heavy |
 |---|---|---|
-| **Fire** | Fireball | **Meteor** — 50 to the target, 30 around it. Half your mana. |
-| **Earth** | Vine trap that roots and bleeds | **Bloom** — a turret that fights for 30s, then bursts into damaging goo |
-| **Ice** | Shard that slows, 1-in-100 to freeze outright | **Ice Wall** — 60 to the target, 20 around it. 70% of your mana. |
-| **Air** | Tornado — flings the weak, shoves the rest | **Tempest** — a screen-wide storm that *deletes* every non-elite caught in it, at the cost of **all** your mana and stamina |
+| **Fire** | Fireball, **30–40** | **Meteor** — 50 to the target, 30 around it. Half your mana. |
+| **Earth** | Vine trap that roots and bleeds | **Earthquake** — 100 damage every 2s to everything in a **10×10-tile** area around you. Drains **all** your mana and holds it at zero for 3s |
+| **Ice** | Shard, **30–40**, slows, 1-in-100 to freeze outright | **Ice Wall** — 60 to the target, 20 around it. 70% of your mana. |
+| **Air** | Gust — flings the weak, shoves the rest | **Tornado** — sets down where you point and roams from enemy to enemy, **10 damage a second** to everything it touches |
 
 Elites and bosses are too heavy to root, fling or blow back, and can never be
 frozen by a lucky shard — against them those spells are damage only.
@@ -64,7 +106,8 @@ then visit `http://localhost:8123`.
 | `SHIFT` | Dash / Roll — costs energy, grants brief invulnerability |
 | `SPACE` | Parry — a short window that negates blue attacks |
 | `R` | Tap to cycle your loadout, hold to pick from the wheel |
-| `E` | Interact with chests, fountains, shrines, the Warden's Gate |
+| `E` | Interact with chests, fountains, shrines, merchants, the Warden's Gate — and John Space |
+| `I` | Inventory: your gear, your coins, your companions' gear |
 | `TAB` | World map |
 | `ESC` | Pause |
 
@@ -95,7 +138,9 @@ both maps in red.
 
 ## The bestiary
 
-Ten enemy types, each built around the parry/dodge read:
+Seventeen enemy types, each built around the parry/dodge read. Enemies in the
+first dungeon, Tripolisis, have 20% less health and damage and turn up elite
+less often than they used to.
 
 | | Attacks |
 |---|---|
@@ -110,17 +155,34 @@ Ten enemy types, each built around the parry/dodge read:
 | **Ironclad** | bash · **crush**. Takes 70% less damage from the front — parry it or get behind it |
 | **Hollow Wraith** | homing orb · **rend**, and it walks through walls |
 | **Tridon's Curse** | no attacks at all — it runs at you and detonates. A kaboom icon overhead flashes faster as the fuse burns, and killing a lit one only sets it off early |
+| **Cop Cruiser** | **run over** — revs with its whole lane painted on the floor, then floors it in a straight line it cannot steer. One sidestep beats it; if it hits a wall it crashes and sits there dazed |
+| **Grave Hound** | bite · pounce. Fast, fragile, comes in numbers |
+| **Ember Imp** | a fan of three embers — parry the middle one |
+| **Spore Puffer** | **puff**, an unblockable ring of spores that leaves the floor poisoned |
+| **Chest Mimic** | sits still looking like furniture until you are close. chomp · **gulp** |
+| **Phantom Lancer** | blinks out beside you. jab · **thrust**, long and narrow — step sideways, not back |
 
 ## Bosses
 
-Three, all at **3000 HP** with a **1.5x damage multiplier** on top of normal
-region scaling, each with a named health bar:
+Three, each with a named health bar, an intro, and things to say:
 
-| | Map | Character |
-|---|---|---|
-| **Flowery** — *The Bloom That Watches* | Tripolisis | A flora miniboss: petals, summons and area denial |
-| **The Sun God** — *Predicament King* | Sarapolis | A corona of rays; relentless ranged pressure |
-| **Judgement** — *Pure Devastation* | Sarapolis (final) | Clenched fists and almost nothing but charges |
+| | Map | HP | Character |
+|---|---|---|---|
+| **Flowery** — *The Bloom That Watches* | Tripolisis | 100,000 | Lashes and volleys; summons and area denial |
+| **The Sun God** — *Predicament King* | Sarapolis | 200,000 | A corona of rays; relentless ranged pressure |
+| **Judgement** — *Pure Devastation* | Sarapolis (final) | 200,000 | Steps out of the Sun God's wreckage. Fists, swipes and rushes |
+
+All three carry a **1.5x damage multiplier** on top of region scaling and fight
+in **combos**: strings of light attacks that end in a **HEAVY**, telegraphed in
+gold with a `HEAVY — PARRY` badge and a gong. **Only heavies can be parried on a
+boss** — a parry against a light attack simply does not catch it. Parrying a
+heavy opens the rhythm break, which is where the real damage is: chip damage
+barely marks a six-figure health bar.
+
+When the gate opens the world stops for the boss's **intro**: the camera finds
+it, the bars come down, it rises out of the floor and speaks (`E` skips). It
+talks again on each phase change, sometimes as a heavy winds up, and as it
+falls.
 
 ## Art
 
@@ -147,11 +209,28 @@ They are persistent — no expiry timer — they pull attacks off you, and
 **drinking from a fountain heals every companion with you**, which is the
 reason to save a fountain rather than sip it the moment you find one.
 
-| | HP | |
+| | HP | Skill |
 |---|---|---|
-| **The Disgraced One** | 200 | Barehanded slashes, ~130 damage over five seconds |
-| **Switcher** | 150 | Claps, and swaps `(x,y)` with a nearby enemy — yanking it off you and taking its place |
-| **John Space** | 500 | Not caged. See below. |
+| **The Disgraced One** | 200 | **Disgrace Flurry** — six barehanded blows in a blur |
+| **Switcher** | 150 | Swaps places with enemies near you, and **Thunderclap** staggers everything around it |
+| **John Space** | 500 | **Space Punch** — crosses the room in one step and hits like a comet |
+
+Companions **level up** from kills (the full kill if they landed it, a share of
+any kill nearby), gaining health and damage each level. They wear gear in the
+same four slots you do. You get **one of each kind per dungeon**; going down to
+the next dungeon sends them all home (their gear comes back to your bag) and
+you have to find new ones there.
+
+They follow properly now: you leave a breadcrumb trail, and a companion or
+minion that loses sight of you walks the trail back through the same doors you
+took. One that falls hopelessly behind or wedges itself is brought back to your
+side. Off-screen companions and minions get **trackers** — an arrow at the
+screen edge in their colour, with the distance — and show on the minimap.
+
+**The Cursed Totem** is a ring. Wear it and your maximum HP, mana and stamina
+are halved until **4 seconds after you take it off**. Put it on a companion and
+they **turn on you**: they become a cursed enemy wearing their face, and the
+totem drops back to you when they fall.
 
 ### John Space
 
@@ -162,8 +241,13 @@ you know he is Someone. What he becomes is entirely your choice:
   dealing **double damage** that does not stop following you.
 - **Leave him alone for two minutes** and he simply joins you as a **500 HP**
   companion.
-
-The bar counts the remaining seconds down while he is still neutral.
+- **Press `E` beside him** and he fights you — **the trial**. A clock counts
+  down two minutes; survive it **without hitting him back** and he joins you,
+  a couple of levels up for the trouble. Strike him (thorns included) and it
+  is the 1000 HP version instead. His light attacks cannot be parried. His
+  gold **HEAVY** can, and parrying it starts a **parry chain**: two to four
+  follow-up heavies, each faster than the last, every one of which has to be
+  parried. Break the chain and he reels, and 15 seconds come off the clock.
 
 ### The rhythm break
 
@@ -173,6 +257,28 @@ timer with a closing ring. Hit the beats and the boss eats 3% of its maximum
 health per beat landed, 1.5x for a clean run, on top of the parry's stagger
 multiplier — a perfect break removes about 29% of a boss. Miss them all and
 you get nothing but the ordinary parry. Either way you leave with full energy.
+Only a parried **HEAVY** opens it (see Bosses).
+
+## Inventory and the shop
+
+`I` opens the inventory: your coins, your four slots, and your bag. Click a bag
+item to put it on whoever the page is showing; click a worn item to take it
+off. With companions, the arrow on the right (or the arrow keys) flips to each
+of their pages. Items that do nothing for a companion, and the totem, say so.
+
+| Slot | Gives |
+|---|---|
+| **Armor** | Defense — a damage-reduction layer on top of class armour |
+| **Boots** | Speed |
+| **Ring** | One specific buff: health, regeneration, heal-on-kill, crit, coins, experience, faster attacks, a longer parry window, cheaper dashes, thorns, luck… plus the Jarona Necklace and the Cursed Totem |
+| **Gauntlets** | Damage |
+
+There are **100 accessories**: 25 per slot, the first 24 of each non-ring slot
+climbing a material ladder from Rag to Starforged, plus one named legendary
+each. The **Hollow Peddler** keeps a stall in the entrance hall of every map
+and one or two more deeper in (`$` on the map); each stocks nine or so pieces,
+and what you buy is gone from that stall for good. Chests sometimes hold an
+accessory too.
 
 ## Combat: read the colour
 
@@ -260,10 +366,11 @@ js/util.js        math, seeded RNG, particles, floating text, screen shake
 js/spatial.js     uniform-grid spatial hash for all proximity queries
 js/save.js        localStorage persistence and explored-map packing
 js/maps.js        map definitions: size, palettes, spawn tables, boss
+js/items.js       the 100 accessories, gear slots, and shop stock
 js/dungeon.js     procedural generation, regions, props, lighting anchors
 js/art.js         every creature and player silhouette, plus attack poses
 js/shrines.js     shrine families, outcomes and the shared icon table
-js/npcs.js        companions: The Disgraced One, Switcher, John Space
+js/npcs.js        companions (The Disgraced One, Switcher, John Space) and Follow
 js/summons.js     Necromancer minions and Mage ground effects
 js/weapons.js     the classes and the perk pools — the core design file
 js/entities.js    player, enemies, projectiles, pickups
