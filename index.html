@@ -62,8 +62,8 @@
   <div id="title" class="screen">
     <div class="title-inner">
       <h1>HOLLOWDEEP</h1>
-      <p class="tagline">Two dungeons sprawl beneath the world. You may carry <em>one</em> weapon down.<br>
-        What you choose is what you become.</p>
+      <p class="tagline">Two dungeons sprawl beneath the world, and above them a base the dead overran.<br>
+        You may carry <em>one</em> weapon down. What you choose is what you become.</p>
 
       <div id="slotBox" class="slots">
         <div class="slots-head">Save slots</div>
@@ -146,11 +146,27 @@
           </ul>
           <span class="pick">Take the wooden staff</span>
         </button>
+
+        <button class="card" data-class="ninja">
+          <div class="card-art art-fist"></div>
+          <h2>Bare Fists</h2>
+          <div class="klass">→ NINJA</div>
+          <p>No weapon to drop. No sound to give you away.</p>
+          <ul>
+            <li><b>85</b> Vitality — fragile, and fast</li>
+            <li>Quick jabs that alternate hands</li>
+            <li><b>Smoke Bomb</b>: the dizzy attack each other (10s cooldown)</li>
+            <li><b>R</b>: <b>Ambush Mode</b> — unseen, and your first blow is a <b>100</b> crit</li>
+            <li><b>Shadow Step</b> dash with invulnerability</li>
+          </ul>
+          <span class="pick">Take nothing but your fists</span>
+        </button>
       </div>
 
       <div class="seedrow">
+        <button class="hard-toggle" id="hardToggle" type="button" aria-pressed="false">☠ Hard Mode: <b>Off</b></button>
         <label>World seed <input id="seedInput" type="text" placeholder="random"></label>
-        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · I inventory · TAB map · F fullscreen · ESC pause</span>
+        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · I inventory · TAB map · M music · F fullscreen · ESC pause</span>
       </div>
     </div>
   </div>
@@ -215,6 +231,7 @@
       <div class="statgrid" id="pauseStats"></div>
       <p class="sub">ESC to resume</p>
       <button class="btn" id="resumeBtn">Resume</button>
+      <button class="btn" id="musicBtn">Music: On</button>
       <button class="btn" data-fullscreen><span class="fs-label">Fullscreen</span></button>
       <button class="btn danger" id="quitBtn">Abandon run</button>
     </div>
@@ -234,6 +251,7 @@
          <span class="ic" style="color:#e2b34a">▮</span> chest &nbsp;
          <span class="ic" style="color:#4fd0a8">≈</span> fountain &nbsp;
          <span class="ic" style="color:#c8a86a">⌗</span> cage &nbsp;
+         <span class="ic" style="color:#ffd479">$</span> peddler &nbsp;
          <span class="ic" style="color:#fff">★</span> gate &nbsp; — TAB to close</p>
     </div>
   </div>
@@ -261,8 +279,10 @@
 <script src="js/summons.js"></script>
 <script src="js/weapons.js"></script>
 <script src="js/entities.js"></script>
+<script src="js/bosses.js"></script>
 <script src="js/platform.js"></script>
 <script src="js/touch.js"></script>
+<script src="js/audio.js"></script>
 <script src="js/game.js"></script>
 <script src="js/main.js"></script>
 </body>

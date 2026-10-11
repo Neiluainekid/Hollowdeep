@@ -13,7 +13,12 @@
      - each has a unique skill on its own cooldown
      - they wear gear: the same four slots as you, set from your inventory
      - only one of each kind per dungeon; a new dungeon sends them all home
-     - they follow you properly (see Follow below) */
+     - they follow you properly (see Follow below)
+
+   Update 4.0: four more, and they only live in the two later stages — two
+   caged in Sarapolis, two in Day-ZEE. Two of them fight from range, and two
+   look after you rather than the enemy. John Space also keeps his own look
+   once he joins you. */
 'use strict';
 
 /* ------------------------------------------------------------------ */
@@ -129,6 +134,53 @@ const COMPANIONS = {
     color: '#8fd4ff', dark: '#2b3c66',
     skill: { id: 'spacePunch', name: 'Space Punch', cd: 7, desc: 'Crosses the room in one step and hits like a comet.' },
     blurb: 'You left him alone. He appreciated that.',
+  },
+
+  /* ---------------- Update 4.0: Sarapolis ---------------- */
+  emberknight: {
+    id: 'emberknight',
+    name: 'The Ember Knight',
+    hp: 260, speed: 136, radius: 14,
+    damage: 24, hitCd: 0.9, reach: 58, arc: 1.9,
+    color: '#ff8a3c', dark: '#5c200c',
+    maps: [2],
+    burns: { dps: 8, time: 3 },
+    skill: { id: 'flameWheel', name: 'Flame Wheel', cd: 9, desc: 'Spins a burning blade through everything around him.' },
+    blurb: 'Swore an oath to the Slagworks. The Slagworks is gone; the oath is not.',
+  },
+  glasssaint: {
+    id: 'glasssaint',
+    name: 'The Glass Saint',
+    hp: 170, speed: 146, radius: 12,
+    damage: 14, hitCd: 1.0, reach: 50, arc: 1.7,
+    color: '#cfe8ff', dark: '#3a4a66',
+    maps: [2],
+    skill: { id: 'mirrorWard', name: 'Mirror Ward', cd: 14, support: true, desc: 'Wards you: the next hit is swallowed whole, and some of it goes back.' },
+    blurb: 'Made of the Glass Waste. Shines on your behalf.',
+  },
+
+  /* ---------------- Update 4.0: Day-ZEE ---------------- */
+  medic: {
+    id: 'medic',
+    name: 'Field Medic Ross',
+    hp: 190, speed: 150, radius: 12,
+    damage: 12, hitCd: 0.6, reach: 44, arc: 1.6,
+    color: '#f0f0f0', dark: '#8a1c1c',
+    maps: [3],
+    ranged: { range: 340, cd: 0.6, speed: 640, damage: 12, color: '#ffe08a' },
+    skill: { id: 'patchUp', name: 'Patch Up', cd: 11, support: true, desc: 'Patches you (and the others) up mid-fight.' },
+    blurb: 'Still has a full kit. Still has a pistol. Has stopped asking questions.',
+  },
+  sergeant: {
+    id: 'sergeant',
+    name: 'Sgt. Holloway',
+    hp: 300, speed: 138, radius: 13,
+    damage: 18, hitCd: 0.7, reach: 50, arc: 1.6,
+    color: '#8a9a5a', dark: '#2a3218',
+    maps: [3],
+    ranged: { range: 420, cd: 0.32, speed: 700, damage: 9, color: '#ffd27a', burst: 3 },
+    skill: { id: 'airstrike', name: 'Airstrike', cd: 13, desc: 'Calls the last working radio on the base: artillery on the enemy.' },
+    blurb: 'Last man standing in his unit. Intends to stay that way.',
   },
 };
 
@@ -255,7 +307,7 @@ class Companion {
     // that enemy's place in return. Pulls things off the player.
     if (this.def.swap && this.swapCd <= 0) {
       const far = game.enemyHash.nearest(this.x, this.y, this.def.swap.range,
-        e => e.targetable && !e.def.boss && U.dist(e.x, e.y, p.x, p.y) < 260);
+        e => e.targetable && !e.isHeavyweight && U.dist(e.x, e.y, p.x, p.y) < 260);
       if (far) {
         this.swapCd = this.def.swap.cd;
         this.clap = 0.35;
@@ -272,9 +324,24 @@ class Companion {
       }
     }
 
-    if (foe && this.skillCd <= 0) this.useSkill(game, foe);
+    const support = this.def.skill && this.def.skill.support;
+    if (support && this.skillCd <= 0) this.useSupport(game);
+    else if (foe && this.skillCd <= 0) this.useSkill(game, foe);
 
-    if (foe) {
+    if (foe && this.def.ranged) {
+      /* Shooters hold a distance and fire when they have a clear line. */
+      const rg = this.def.ranged;
+      const d = U.dist(this.x, this.y, foe.x, foe.y);
+      const ang = U.angle(this.x, this.y, foe.x, foe.y);
+      const want = rg.range * 0.6;
+      const drift = d > rg.range * 0.85 ? 1 : d < want * 0.6 ? -1 : 0;
+      ax = Math.cos(ang) * this.speed * drift;
+      ay = Math.sin(ang) * this.speed * drift;
+      if (d < rg.range && this.hitCd <= 0 && game.dungeon.lineOfSight(this.x, this.y, foe.x, foe.y)) {
+        this.hitCd = rg.cd;
+        this.shoot(game, ang, rg);
+      }
+    } else if (foe) {
       const d = U.dist(this.x, this.y, foe.x, foe.y);
       const ang = U.angle(this.x, this.y, foe.x, foe.y);
       ax = Math.cos(ang) * this.speed;
@@ -284,6 +351,11 @@ class Companion {
         this.swing = 0.22;
         this.swingAngle = ang;
         this.strike(game, foe, this.def.damage * this.dmgMul);
+        // The Ember Knight's blade sets things alight.
+        if (this.def.burns && !foe.dead) {
+          foe.burnT = this.def.burns.time;
+          foe.burnDps = Math.max(foe.burnDps || 0, this.def.burns.dps + this.level);
+        }
         game.audio.impact(false);
         game.fx.spark(this.x + Math.cos(ang) * this.radius, this.y + Math.sin(ang) * this.radius, {
           count: 7, color: [this.def.color, '#ffffff'], dir: ang, spread: 0.7,
@@ -299,6 +371,48 @@ class Companion {
     this.vx = U.damp(this.vx, ax, 0.24, dt);
     this.vy = U.damp(this.vy, ay, 0.24, dt);
     moveWithCollision(this, this.vx * dt, this.vy * dt, game.dungeon);
+  }
+
+  // A companion's shot: credited to them, so the kill levels them up.
+  shoot(game, ang, rg) {
+    const burst = rg.burst || 1;
+    for (let i = 0; i < burst; i++) {
+      const a = ang + (i - (burst - 1) / 2) * 0.06;
+      game.projectiles.push(new Projectile({
+        x: this.x + Math.cos(a) * 14, y: this.y + Math.sin(a) * 14,
+        vx: Math.cos(a) * rg.speed, vy: Math.sin(a) * rg.speed,
+        damage: rg.damage * this.dmgMul, life: 1.1, radius: 4,
+        color: rg.color, owner: 'player', knock: 60, creditTo: this,
+      }));
+    }
+    this.swing = 0.12;
+    this.swingAngle = ang;
+    game.audio.gunshot();
+  }
+
+  /* Skills that look after you rather than hit anything. */
+  useSupport(game) {
+    const s = this.def.skill;
+    const p = game.player;
+    if (s.id === 'patchUp') {
+      // Only worth it when someone is actually hurt.
+      const hurt = p.hp < p.maxHp * 0.8 || game.companions.some(c => !c.dead && c.hp < c.maxHp * 0.7);
+      if (!hurt || U.dist(this.x, this.y, p.x, p.y) > 420) return;
+      const amt = 25 + this.level * 4;
+      const h = p.heal(amt);
+      if (h > 0) game.fx.text(p.x, p.y - 34, `+${Math.round(h)}`, '#6fbf73', 16);
+      for (const c of game.companions) if (!c.dead) c.heal(amt);
+      game.fx.ring(p.x, p.y, 28, '#ff6b6b', 22);
+      game.fx.text(this.x, this.y - 34, 'PATCH UP', '#ffffff', 14);
+      game.audio.blip(880, 0.12, 0.08, 'sine');
+    } else if (s.id === 'mirrorWard') {
+      if (p.ward > 0 || U.dist(this.x, this.y, p.x, p.y) > 460) return;
+      p.ward = 1;
+      game.fx.ring(p.x, p.y, 30, '#cfe8ff', 26);
+      game.fx.text(this.x, this.y - 34, 'MIRROR WARD', '#cfe8ff', 14);
+      game.audio.ward();
+    }
+    this.skillCd = s.cd;
   }
 
   /* ---------------- unique skills ---------------- */
@@ -325,6 +439,32 @@ class Companion {
       game.fx.addShake(6);
       game.audio.blip(660, 0.2, 0.14, 'square');
       game.audio.explode();
+    } else if (s.id === 'flameWheel') {
+      if (U.dist(this.x, this.y, foe.x, foe.y) > 140) return;
+      const r = 115;
+      for (const e of game.enemyHash.query(this.x, this.y, r + 30, this._q)) {
+        if (!e.targetable || U.dist(this.x, this.y, e.x, e.y) > r + e.radius) continue;
+        this.strike(game, e, (40 + lv * 5) * (1 + this.gearDmg), 300);
+        e.burnT = 4; e.burnDps = Math.max(e.burnDps || 0, 12 + lv * 2);
+      }
+      this.clap = 0.5;
+      game.fx.ring(this.x, this.y, r * 0.55, '#ff8a3c', 40);
+      game.fx.spark(this.x, this.y, { count: 30, color: ['#ff8a3c', '#ffd479'], speedMax: 300, lifeMax: 0.6 });
+      game.fx.text(this.x, this.y - 34, 'FLAME WHEEL', '#ffb347', 15);
+      game.fx.addShake(6);
+      game.audio.cast('fire', true);
+    } else if (s.id === 'airstrike') {
+      // Four shells around the target, a second and a half out.
+      for (let i = 0; i < 4; i++) {
+        const a = U.rand(0, Math.PI * 2), r = i === 0 ? 0 : U.rand(40, 120);
+        game.impacts.push({
+          x: foe.x + Math.cos(a) * r, y: foe.y + Math.sin(a) * r, t: 0, delay: 1.1 + i * 0.18,
+          radius: 80, color: '#ffb347', style: 'shell', hostile: false,
+          aoeDamage: (60 + lv * 8) * (1 + this.gearDmg),
+        });
+      }
+      game.fx.text(this.x, this.y - 34, 'AIRSTRIKE INBOUND', '#ffd27a', 15);
+      game.audio.missile();
     } else if (s.id === 'spacePunch') {
       const d = U.dist(this.x, this.y, foe.x, foe.y);
       if (d < 90 || d > 300 || !game.dungeon.lineOfSight(this.x, this.y, foe.x, foe.y)) return;
@@ -375,6 +515,7 @@ class Companion {
   }
 
   draw(ctx, time) {
+    if (this.kind === 'johnspace') { this.drawJohn(ctx, time); return; }
     const y = this.y + Math.sin(this.bob) * 1.8;
     const r = this.radius;
     ctx.save();
@@ -434,6 +575,34 @@ class Companion {
       }
     }
 
+    // Update 4.0 companions wear what they are.
+    const hx = this.x, top = y - h / 2;
+    if (this.kind === 'medic') {
+      ctx.fillStyle = '#d42a2a';
+      ctx.fillRect(hx - 2, y - 7, 4, 12); ctx.fillRect(hx - 6, y - 3, 12, 4);   // red cross
+      ctx.fillStyle = '#d42a2a';
+      ctx.fillRect(hx - r * 0.55, top - r * 0.62, r * 1.1, r * 0.2);              // headband
+    } else if (this.kind === 'sergeant') {
+      ctx.fillStyle = '#4a5a2a';
+      ctx.beginPath(); ctx.arc(hx, top - r * 0.5, r * 0.68, Math.PI, 0); ctx.fill();   // helmet
+      const a = this.swingAngle || 0;
+      ctx.save(); ctx.translate(hx, y); ctx.rotate(a);
+      ctx.fillStyle = '#2a2a2e'; ctx.fillRect(4, -2, 20, 4); ctx.restore();       // rifle
+    } else if (this.kind === 'emberknight') {
+      ctx.fillStyle = '#3a2418';
+      ctx.fillRect(hx - w / 2, y - h / 2, w, h * 0.32);                          // pauldrons
+      const a = this.swingAngle || 0;
+      ctx.save(); ctx.translate(hx, y); ctx.rotate(a);
+      ctx.shadowBlur = 14; ctx.shadowColor = '#ff8a3c';
+      ctx.fillStyle = '#ffb347'; ctx.fillRect(6, -2, 26, 4);                     // burning blade
+      ctx.restore();
+    } else if (this.kind === 'glasssaint') {
+      ctx.globalAlpha = 0.5 + Math.sin(time * 3) * 0.2;
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(hx, top - r * 0.42, r * 0.95, 0, Math.PI * 2); ctx.stroke();   // halo
+      ctx.globalAlpha = 1;
+    }
+
     ctx.fillStyle = 'rgba(20,16,24,.85)';
     ctx.fillRect(this.x - 3.6, y - h / 2 - r * 0.55, 2.3, 2.3);
     ctx.fillRect(this.x + 1.3, y - h / 2 - r * 0.55, 2.3, 2.3);
@@ -451,5 +620,39 @@ class Companion {
     ctx.fillText(`${this.def.name} · Lv ${this.level}`, this.x, y + h / 2 + 13);
     ctx.restore();
     void time;
+  }
+
+  /* Update 4.0: John Space looks like John Space on your side too — the same
+     body he wears standing neutral in the deep, not a generic blue figure.
+     His fists come up when he is fighting. */
+  drawJohn(ctx, time) {
+    const r = this.radius;
+    const fighting = this.swing > 0 || !!this.punch;
+    const face = this.punch ? this.punch.angle
+      : this.swingAngle !== undefined && this.swing > 0 ? this.swingAngle
+      : Math.hypot(this.vx, this.vy) > 12 ? Math.atan2(this.vy, this.vx) : (this._face || 0);
+    this._face = face;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,.34)';
+    ctx.beginPath();
+    ctx.ellipse(this.x, this.y + r * 0.85, r * 0.85, r * 0.32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const proxy = {
+      type: 'johnspace', radius: r, def: { dark: this.def.dark, color: this.def.color },
+      face, vx: this.vx, vy: this.vy, bob: this.bob, flash: this.flash,
+      enraged: false, companion: true, fighting, atk: null, aggro: true,
+    };
+    Art.drawEnemy(ctx, proxy, this.x, this.y, time, this.flash > 0 ? '#ffffff' : this.def.color);
+    if (this.hp < this.maxHp) {
+      ctx.fillStyle = 'rgba(0,0,0,.6)';
+      ctx.fillRect(this.x - 15, this.y - r * 2.2, 30, 4);
+      ctx.fillStyle = this.hp / this.maxHp < 0.35 ? '#e1553c' : this.def.color;
+      ctx.fillRect(this.x - 15, this.y - r * 2.2, 30 * (this.hp / this.maxHp), 4);
+    }
+    ctx.fillStyle = 'rgba(232,226,212,.55)';
+    ctx.font = '9px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${this.def.name} · Lv ${this.level}`, this.x, this.y + r * 1.9);
+    ctx.restore();
   }
 }

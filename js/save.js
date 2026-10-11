@@ -106,7 +106,7 @@ const Save = {
     const mapName = (typeof MAPS !== 'undefined' && Maps.byNumber(mapNo))
       ? Maps.byNumber(mapNo).name : `Map ${mapNo}`;
     const mins = Math.floor((data.elapsed || 0) / 60);
-    return `${cls ? cls.className : '?'} · Lv ${data.player.level} · ${mapName} · ${mins}m`;
+    return `${cls ? cls.className : '?'} · Lv ${data.player.level} · ${mapName} · ${mins}m${data.hard ? ' · HARD' : ''}`;
   },
 
   /* ---------------- meta (survives death) ---------------- */

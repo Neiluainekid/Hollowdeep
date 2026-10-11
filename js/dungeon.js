@@ -1,6 +1,11 @@
 /* Procedural dungeon: rooms + caverns stitched into one continuous, loopy
    open world. No level transitions — the whole map exists at once and
-   difficulty rises with graph distance from the entrance. */
+   difficulty rises with graph distance from the entrance.
+
+   Update 4.0: an `outdoor` map (Day-ZEE) is built by the same generator but
+   reads as a base rather than a cave: square yards instead of caverns, wide
+   roads, crates, and two war-machine yards — one of them a flooded dry dock
+   with a battleship sitting in it. */
 'use strict';
 
 const TILE = 34;
@@ -76,7 +81,7 @@ class Dungeon {
 
     // --- place non-overlapping rooms ---
     for (let attempt = 0; attempt < 480 && this.rooms.length < this.map.roomTarget; attempt++) {
-      const shape = r.chance(0.35) ? 'cave' : 'rect';
+      const shape = r.chance(this.map.outdoor ? 0.1 : 0.35) ? 'cave' : 'rect';
       const w = r.int(9, shape === 'cave' ? 24 : 19);
       const h = r.int(8, shape === 'cave' ? 22 : 17);
       const x = r.int(2, this.w - w - 2);
@@ -163,7 +168,8 @@ class Dungeon {
 
   carveCorridor(a, b) {
     const r = this.rng;
-    const width = r.chance(0.25) ? 2 : 1;   // half-width: 1 -> 3 tiles, 2 -> 5 tiles
+    // half-width: 1 -> 3 tiles, 2 -> 5 tiles. A base has roads, not tunnels.
+    const width = r.chance(this.map.outdoor ? 0.65 : 0.25) ? 2 : 1;
     const horizFirst = r.chance(0.5);
     const bend = horizFirst ? { x: b.cx, y: a.cy } : { x: a.cx, y: b.cy };
     this.carveLine(a.cx, a.cy, bend.x, bend.y, width);
@@ -239,6 +245,29 @@ class Dungeon {
       if (i < 5) rest[i].kind = 'treasure';
       else if (i < 9) rest[i].kind = 'shrine';
     }
+    this.assignWarMachines();
+  }
+
+  /* Day-ZEE's war machines each get a yard to themselves: a big room in the
+     right band of the depth ladder. The dock is flooded in decorate(). */
+  assignWarMachines() {
+    if (!this.map.warMachines) return;
+    const r = this.rng;
+    for (const wm of this.map.warMachines) {
+      let pool = this.rooms.filter(room => room.kind === 'combat' && !room.arena
+        && room.tier >= wm.tiers[0] && room.tier <= wm.tiers[1] && room.w >= 12 && room.h >= 11);
+      if (!pool.length) {
+        // Nothing big enough in band: the roomiest yards nearest the band.
+        const off = (room) => Math.max(0, wm.tiers[0] - room.tier, room.tier - wm.tiers[1]);
+        pool = this.rooms.filter(room => room.kind === 'combat' && !room.arena && room.w >= 10 && room.h >= 9)
+          .sort((a, b) => off(a) - off(b) || b.w * b.h - a.w * a.h).slice(0, 3);
+      }
+      if (!pool.length) continue;
+      const room = pool[r.int(0, pool.length)];
+      room.arena = wm.type;
+      room.dock = !!wm.dock;
+      room.hasCage = true;          // keep cages and stalls out of the yard
+    }
   }
 
   // Walkable tiles on the ring just outside the boss room — barred during the fight.
@@ -267,8 +296,26 @@ class Dungeon {
           if (this.inBounds(tx, ty) && this.at(tx, ty) !== T.WALL && this.roomMap[this.idx(tx, ty)] < 0)
             this.roomMap[this.idx(tx, ty)] = i;
 
+      // The dry dock: flooded wall to wall, a walkway left round the edge.
+      if (room.dock) {
+        for (let ty = room.y + 2; ty < room.y + room.h - 2; ty++)
+          for (let tx = room.x + 2; tx < room.x + room.w - 2; tx++)
+            if (this.at(tx, ty) === T.FLOOR) this.set(tx, ty, T.WATER);
+      }
+      // A base is cluttered: stacks of crates (pillar tiles) in the yards,
+      // never in a war machine's yard, never near the middle.
+      if (this.map.outdoor && !room.arena && room.shape === 'rect' && room.kind !== 'boss') {
+        const crates = r.int(2, 7);
+        for (let k = 0; k < crates; k++) {
+          const tx = room.x + 1 + r.int(0, Math.max(1, room.w - 2));
+          const ty = room.y + 1 + r.int(0, Math.max(1, room.h - 2));
+          if (Math.abs(tx - room.cx) < 3 && Math.abs(ty - room.cy) < 3) continue;
+          if (this.at(tx, ty) === T.FLOOR) this.set(tx, ty, T.PILLAR);
+        }
+      }
+
       // Pillars in the larger halls.
-      if (room.shape === 'rect' && room.w >= 12 && room.h >= 10 && r.chance(0.55)) {
+      if (!room.arena && room.shape === 'rect' && room.w >= 12 && room.h >= 10 && r.chance(0.55)) {
         const insetX = 2 + r.int(0, 2), insetY = 2 + r.int(0, 2);
         for (const px of [room.x + insetX, room.x + room.w - 1 - insetX]) {
           for (const py of [room.y + insetY, room.y + room.h - 1 - insetY]) {
@@ -278,7 +325,7 @@ class Dungeon {
       }
 
       // Standing water in caverns.
-      if (room.shape === 'cave' && r.chance(0.5)) {
+      if (!room.arena && room.shape === 'cave' && r.chance(0.5)) {
         const px = room.cx + r.int(-3, 4), py = room.cy + r.int(-3, 4);
         const rad = r.int(2, 5);
         for (let ty = py - rad; ty <= py + rad; ty++)
@@ -300,7 +347,7 @@ class Dungeon {
           if (this.at(tx, ty) !== T.WALL) continue;
           if (this.at(tx, ty + 1) === T.WALL || this.at(tx, ty + 1) === T.PILLAR) continue;
           if (!this.inBounds(tx, ty + 1) || SOLID[this.at(tx, ty + 1)]) continue;
-          if (!r.chance(0.17)) continue;
+          if (!r.chance(this.map.outdoor ? 0.1 : 0.17)) continue;   // floodlights are sparser
           this.torches.push({
             x: (tx + 0.5) * TILE, y: (ty + 0.95) * TILE,
             phase: r() * 10, tier: room.tier,
@@ -368,6 +415,11 @@ class Dungeon {
       const density = room.w * room.h / 150;
       let count = Math.round(density * (1.1 + room.tier * 0.32) * r() * 1.5 + 1 + room.tier * 0.5);
       count = U.clamp(count, 1, 11);
+      // A war machine's yard: the machine, and only a few hangers-on.
+      if (room.arena) {
+        room.spawns.push({ type: room.arena, x: room.wx, y: room.wy, elite: false, threat: room.threat });
+        count = Math.ceil(count / 3);
+      }
 
       for (let i = 0; i < count; i++) {
         const type = r.pick(table);
@@ -391,6 +443,37 @@ class Dungeon {
     this.placeUpdate2Shrines();
     this.placeCages();
     this.placeMerchants();
+    this.placeLateProps();
+  }
+
+  /* Update 4.0 props: the Ninja's class shrine and the new companions'
+     cages. Placed after everything older on purpose — a save stores props by
+     index, so appending keeps every existing save pointing at the same
+     chests and shrines it always did. */
+  placeLateProps() {
+    const r = this.rng;
+    const free = this.rooms.filter(room => room.kind !== 'start' && room.kind !== 'boss'
+      && !room.hasRedShrine && !room.hasShrine2 && !room.hasCage && !room.hasMerchant && !room.arena);
+    const takeRoom = () => free.length ? free.splice(r.int(0, free.length), 1)[0] : null;
+
+    for (const shrine of CLASS_SHRINES.filter(s => s.late)) {
+      const room = takeRoom();
+      if (!room) break;
+      room.hasShrine2 = true;
+      this.props.push({ type: 'classshrine', ...this.spotIn(room, 1), room, used: false, shrine });
+    }
+
+    for (const kind of Object.keys(COMPANIONS)) {
+      if (!(COMPANIONS[kind].maps || []).includes(this.map.number)) continue;
+      // The deeper half, like John: you earn these.
+      const deep = free.filter(room => room.tier >= 2);
+      const pool = deep.length ? deep : free;
+      if (!pool.length) break;
+      const room = pool[r.int(0, pool.length)];
+      free.splice(free.indexOf(room), 1);
+      room.hasCage = true;
+      this.props.push({ type: 'cage', ...this.spotIn(room, 1), room, used: false, npc: kind });
+    }
   }
 
   /* Update 3.0: the Hollow Peddler. One waits in the entrance hall so the
@@ -460,7 +543,7 @@ class Dungeon {
     };
 
     // One of each of the eight class shrines, scattered.
-    for (const number of Shrines.numbers()) {
+    for (const number of Shrines.legacyNumbers()) {
       const room = take(1)[0];
       if (!room) break;
       this.props.push({
@@ -483,7 +566,7 @@ class Dungeon {
       this.props.push({
         type: 'corruptshrine', ...this.spotIn(room, 1),
         room, used: false, active: false, guard: null,
-        minibossType: Shrines.rollMiniboss(r),
+        minibossType: Shrines.rollMiniboss(r, this.map.number),
       });
     }
   }

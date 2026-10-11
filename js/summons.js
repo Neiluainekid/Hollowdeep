@@ -15,13 +15,14 @@ const MINION_TYPES = {
     desc: 'The reliable one. Fades after 15 seconds.',
   },
   bomber: {
-    // Update 3.0: a 10x10-tile blast — paid for with all your mana for 5s
-    // and your health held at 65% for 5s (see Player.summonMinion).
+    // Update 3.0: paid for with all your mana for 5s and your health held at
+    // 65% for 5s (see Player.summonMinion). Update 4.0: and now it is worth
+    // it — a 30x30-tile blast, 1000 to 5000 rolled for every enemy caught.
     name: 'Bloat', icon: '✹', color: '#c4e86b', dark: '#5c6b2a',
-    hp: 26, speed: 160, radius: 11, damage: 40, radiusAoe: TILE * 5,
+    hp: 26, speed: 160, radius: 11, damage: [1000, 5000], radiusAoe: TILE * 15,
     life: 14, cost: 22, cooldown: 10,
     explodes: true,
-    desc: 'Detonates for 40 across a 10×10 area. Costs all your mana and holds you at 65% health for 5s.',
+    desc: 'Detonates for 1000–5000 across a 30×30 area. Costs all your mana and holds you at 65% health for 5s.',
   },
   brute: {
     name: 'Bone Brute', icon: '▣', color: '#ddd6c0', dark: '#6b6455',
@@ -173,15 +174,22 @@ class Minion {
   detonate(game) {
     this.dead = true;
     const r = this.def.radiusAoe;
-    game.fx.ring(this.x, this.y, r * 0.55, '#c4e86b', 34);
+    const [lo, hi] = this.def.damage;
+    // Thirty tiles across: the shockwave is most of the screen.
+    game.fx.ring(this.x, this.y, r * 0.3, '#c4e86b', 60);
+    game.fx.ring(this.x, this.y, r * 0.15, '#ffffff', 40);
     game.fx.spark(this.x, this.y, {
-      count: 34, color: ['#c4e86b', '#ffffff', '#6b8a2a'], speedMax: 340, lifeMax: 0.7, sizeMax: 5,
+      count: 80, color: ['#c4e86b', '#ffffff', '#6b8a2a'], speedMax: 900, lifeMax: 0.9, sizeMax: 7,
     });
-    game.fx.addShake(7);
+    game.fx.addShake(20);
+    game.fx.addFlash('#c4e86b', 0.4);
+    game.impactFreeze(0.08);
     game.audio.explode();
+    game.audio.cannon();
+    const power = this.owner ? this.owner.minionPower : 1;
     for (const e of game.enemyHash.query(this.x, this.y, r, this._q)) {
       if (!e.targetable || U.dist(this.x, this.y, e.x, e.y) > r) continue;
-      e.takeDamage(this.def.damage * (this.owner ? this.owner.minionPower : 1), game, this.x, this.y, 300, false);
+      e.takeDamage(U.randi(lo, hi + 1) * power, game, this.x, this.y, 300, false);
     }
   }
 
@@ -317,6 +325,8 @@ class Zone {
     if (this.life <= 0) { this.onEnd(game); this.dead = true; return; }
 
     if (this.kind === 'plant') { this.updatePlant(dt, game); return; }
+    // The Blizzard rides with whoever cast it.
+    if (this.follow && !this.follow.dead) { this.x = this.follow.x; this.y = this.follow.y; }
 
     if (this.kind === 'tornado') this.steerTornado(dt, game);
 
@@ -327,6 +337,10 @@ class Zone {
       game.fx.addShake(10);
       game.fx.ring(this.x, this.y, this.radius * 0.5, '#c8a86a', 30);
       game.audio.explode();
+    }
+    if (doTick && this.kind === 'blizzard') {
+      game.fx.ring(this.x, this.y, 70, '#dff1ff', 30);
+      game.fx.addShake(4);
     }
 
     // Enemy-made puddles burn the player instead. Standing in one is a choice,
@@ -344,12 +358,20 @@ class Zone {
       if (this.kind === 'tornado') {
         // Caught in the funnel: dragged round with it.
         const a = U.angle(e.x, e.y, this.x, this.y) + 1.2;
-        if (!e.def.boss) { e.vx += Math.cos(a) * 260 * dt; e.vy += Math.sin(a) * 260 * dt; }
+        if (!e.isHeavyweight) { e.vx += Math.cos(a) * 260 * dt; e.vy += Math.sin(a) * 260 * dt; }
       }
       if (this.kind === 'vine') {
         // Rooting is for ordinary foes. Elites (your "giants") and bosses
         // shrug it off — they only take the damage.
-        if (!e.elite && !e.def.boss) e.root = Math.max(e.root, 0.4);
+        if (!e.elite && !e.isHeavyweight) e.root = Math.max(e.root, 0.4);
+      }
+      // Everything in the Blizzard crawls.
+      if (this.kind === 'blizzard') e.chill = Math.max(e.chill, 1.5);
+      // Smoke: the dizzy turn on their own side. Bosses only cough.
+      if (this.kind === 'smoke' && !e.isHeavyweight && e.targetable) {
+        if (e.dizzy <= 0) game.fx.text(e.x, e.y - e.radius - 22, 'DIZZY', '#c9b8ff', 12);
+        e.dizzy = Math.max(e.dizzy, this.dizzy || 2.5);
+        e.aggro = true;
       }
       if (doTick) e.takeDamage(this.damage * this.power, game, this.x, this.y, 0, false);
     }
@@ -487,6 +509,40 @@ class Zone {
         ctx.ellipse(this.x + Math.cos(ang) * this.radius * 0.4, this.y + Math.sin(ang) * this.radius * 0.24,
           this.radius * 0.22, this.radius * 0.13, 0, 0, Math.PI * 2);
         ctx.fill();
+      }
+
+    } else if (this.kind === 'blizzard') {
+      // A disc of driving snow around the caster, thinning as it ends.
+      const a = U.clamp(this.life / 0.5, 0, 1);
+      ctx.globalAlpha = 0.13 * a;
+      ctx.fillStyle = '#cfe8ff';
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.35 * a;
+      ctx.strokeStyle = '#eaf6ff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 14]);
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, time * 0.8, time * 0.8 + Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffffff';
+      for (let i = 0; i < 70; i++) {
+        const ang = i * 2.399 + time * (0.6 + (i % 5) * 0.12);
+        const rr = this.radius * ((i * 0.6180339) % 1);
+        const fx = this.x + Math.cos(ang) * rr + Math.sin(time * 3 + i) * 6;
+        const fy = this.y + Math.sin(ang) * rr + ((time * 90 + i * 37) % 30) - 15;
+        ctx.globalAlpha = (0.4 + (i % 3) * 0.2) * a;
+        ctx.fillRect(fx, fy, 2.4, 2.4);
+      }
+
+    } else if (this.kind === 'smoke') {
+      // Billowing grey-violet puffs that thin out over the last second.
+      const a = U.clamp(this.life / 1, 0, 1) * U.clamp(this.age / 0.3, 0, 1);
+      for (let i = 0; i < 9; i++) {
+        const ang = i * 0.7 + time * 0.25 * (i % 2 ? 1 : -1);
+        const rr = this.radius * (0.15 + (i % 4) * 0.2);
+        const px = this.x + Math.cos(ang) * rr, py = this.y + Math.sin(ang) * rr * 0.7;
+        ctx.globalAlpha = 0.24 * a;
+        ctx.fillStyle = i % 3 ? '#6e6680' : '#8f7fb8';
+        ctx.beginPath(); ctx.arc(px, py, this.radius * (0.45 + Math.sin(time * 1.4 + i) * 0.06), 0, Math.PI * 2); ctx.fill();
       }
 
     } else if (this.kind === 'plant') {

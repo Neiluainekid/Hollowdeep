@@ -50,6 +50,16 @@
   }
   renderSlots();
 
+  // Update 4.0: hard mode, chosen before the weapon.
+  let hard = false;
+  const hardBtn = document.getElementById('hardToggle');
+  hardBtn.addEventListener('click', () => {
+    hard = !hard;
+    hardBtn.classList.toggle('on', hard);
+    hardBtn.setAttribute('aria-pressed', String(hard));
+    hardBtn.innerHTML = `☠ Hard Mode: <b>${hard ? 'ON — welcome to hell' : 'Off'}</b>`;
+  });
+
   document.querySelectorAll('.card').forEach((card) => {
     card.addEventListener('click', () => {
       // Starting fresh in an occupied slot discards whatever was suspended there.
@@ -57,7 +67,7 @@
         && !confirm(`Slot ${selectedSlot} holds a suspended run. Overwrite it?`)) return;
       // On a phone, go fullscreen and landscape while we still hold a tap.
       if (game.touch.active) Platform.enterFullscreen();
-      game.start(card.dataset.class, document.getElementById('seedInput').value, selectedSlot);
+      game.start(card.dataset.class, document.getElementById('seedInput').value, selectedSlot, hard);
     });
   });
 

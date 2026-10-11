@@ -98,6 +98,76 @@ const Art = {
     ctx.fillRect(x - gap - size / 2, y, size, size);
     ctx.fillRect(x + gap - size / 2, y, size, size);
   },
+  star(ctx, x, y, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const ang = -Math.PI / 2 + i * Math.PI / 5;
+      const rr = i % 2 ? r * 0.45 : r;
+      ctx.lineTo(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr);
+    }
+    ctx.closePath(); ctx.fill();
+  },
+
+  /* Update 4.0: one shambling body for the whole of Day-ZEE — hunched,
+     arms reaching, a gait that drags — dressed differently per type. */
+  zombie(ctx, e, s, o) {
+    const r = s.r * (o.lanky ? 0.95 : 1);
+    const drag = s.gait.cycle;
+    const lean = o.lean || 0.18;
+    // Legs: one stiff, one dragging.
+    Art.limb(ctx, -r * 0.2, r * 0.45, -r * 0.35 + drag * r * 0.25, r * 1.15, r * 0.24, '#3a3a34');
+    Art.limb(ctx, r * 0.2, r * 0.45, r * 0.3 - drag * r * 0.15, r * 1.1, r * 0.24, '#3a3a34');
+    ctx.save();
+    ctx.rotate(lean);
+    const belly = o.belly || 1;
+    // Torso.
+    ctx.fillStyle = o.shirt;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.55 * belly, r * 0.72, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (o.vest) { ctx.fillStyle = o.vest; ctx.fillRect(-r * 0.45 * belly, -r * 0.5, r * 0.9 * belly, r * 0.7); }
+    if (o.ghillie) {
+      ctx.fillStyle = '#4a5a32';
+      for (let i = 0; i < 7; i++) Art.blob(ctx, -r * 0.5 + (i % 4) * r * 0.32, -r * 0.6 + Math.floor(i / 4) * r * 0.6, r * 0.2, r * 0.14, i % 2 ? '#4a5a32' : '#5e6b3a');
+    }
+    // Torn spots.
+    ctx.fillStyle = 'rgba(120,20,20,.55)';
+    ctx.fillRect(-r * 0.2, r * 0.1, r * 0.22, r * 0.14);
+    // Arms reaching forward — further on the wind-up.
+    const reach = r * (0.95 + s.pose.tell * 0.45);
+    Art.limb(ctx, r * 0.1, -r * 0.35, reach, -r * 0.2 + drag * 2, r * 0.2, o.skin);
+    Art.limb(ctx, -r * 0.1, -r * 0.1, reach * 0.9, r * 0.1 - drag * 2, r * 0.2, o.skin);
+    // Head, lolling.
+    const hx = r * 0.25, hy = -r * 0.95 + Math.sin(s.time * 2 + (e.bob || 0)) * 1.2;
+    Art.blob(ctx, hx, hy, r * 0.38, r * 0.4, o.skin);
+    if (o.hood) {
+      ctx.fillStyle = o.hood;
+      ctx.beginPath(); ctx.arc(hx, hy - r * 0.04, r * 0.44, Math.PI * 0.9, Math.PI * 2.1); ctx.fill();
+    }
+    if (o.helmet) {
+      ctx.fillStyle = o.helmet;
+      ctx.beginPath(); ctx.arc(hx, hy - r * 0.08, r * 0.44, Math.PI, 0); ctx.fill();
+      ctx.fillRect(hx - r * 0.5, hy - r * 0.1, r * 1.0, r * 0.08);
+    }
+    if (o.visor) {
+      ctx.fillStyle = 'rgba(160,200,230,.5)';
+      ctx.fillRect(hx - r * 0.05, hy - r * 0.2, r * 0.42, r * 0.32);
+    }
+    // Glowing dead eyes.
+    ctx.fillStyle = e.aggro ? '#e8ff8a' : '#6a7a4a';
+    ctx.fillRect(hx + r * 0.06, hy - r * 0.08, 2.6, 2.4);
+    ctx.fillRect(hx + r * 0.24, hy - r * 0.08, 2.6, 2.4);
+    ctx.restore();
+  },
+
+  rifle(ctx, s, len) {
+    const r = s.r;
+    const lift = -s.pose.tell * r * 0.15;
+    ctx.fillStyle = '#1e1e22';
+    ctx.fillRect(-r * 0.1, -r * 0.35 + lift, r * (1.2 * len), r * 0.16);
+    ctx.fillStyle = '#5a4a32';
+    ctx.fillRect(-r * 0.3, -r * 0.3 + lift, r * 0.35, r * 0.2);
+  },
 
   /* ---------------- the cast ---------------- */
 
@@ -528,6 +598,325 @@ const Art = {
 
     companion(ctx, e, s) { Art.enemy._default(ctx, e, s); },
 
+    /* ---------------- Update 4.0: Day-ZEE ---------------- */
+
+    shambler(ctx, e, s) { Art.zombie(ctx, e, s, { shirt: '#4a5a6a', skin: s.body }); },
+    sprinter(ctx, e, s) { Art.zombie(ctx, e, s, { shirt: '#6a3a2a', skin: s.body, lean: 0.35, lanky: true }); },
+    spewer(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: '#5a5a3a', skin: s.body, belly: 1.35 });
+      // Bile at the mouth, worse as it loads.
+      const k = s.pose.tell;
+      if (k > 0) Art.blob(ctx, s.r * 0.85, -s.r * 0.75, s.r * (0.12 + k * 0.2), s.r * (0.1 + k * 0.14), '#c4e86b');
+    },
+    hazmat(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: s.body, skin: '#d8c860', belly: 1.15, hood: '#e0c84a' });
+      // Gas mask and a cracked visor that glows as it is about to rupture.
+      ctx.fillStyle = '#2a2a24';
+      ctx.fillRect(s.r * 0.2, -s.r * 1.0, s.r * 0.45, s.r * 0.35);
+      ctx.fillStyle = s.pose.tell > 0 ? `rgba(196,232,107,${0.4 + s.pose.tell * 0.6})` : '#8a9a6a';
+      ctx.fillRect(s.r * 0.05, -s.r * 1.28, s.r * 0.5, s.r * 0.22);
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(-s.r * 0.15, -s.r * 0.95, s.r * 0.22, s.r * 0.22);   // filter canister
+    },
+    grunt(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: s.body, skin: '#9aa87a', helmet: '#4a5a2a', vest: '#3a4426' });
+      Art.rifle(ctx, s, 1.0);
+    },
+    gunner(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: s.body, skin: '#8a9a6a', helmet: '#3a4426', vest: '#2a3018', belly: 1.25 });
+      // A belt-fed gun, braced at the hip, barrel spinning while it fires.
+      const firing = e.atk && e.atk.phase === 'active';
+      ctx.fillStyle = '#1e1e22';
+      ctx.fillRect(s.r * 0.1, -s.r * 0.15, s.r * 1.6, s.r * 0.42);
+      ctx.fillStyle = '#3a3a40';
+      for (let i = 0; i < 3; i++) ctx.fillRect(s.r * 1.6, -s.r * 0.12 + i * s.r * 0.13 + (firing ? Math.sin(s.time * 60 + i) * 1.2 : 0), s.r * 0.6, s.r * 0.08);
+      ctx.fillStyle = '#c8a040';
+      ctx.fillRect(-s.r * 0.2, s.r * 0.25, s.r * 0.5, s.r * 0.12);   // ammo belt
+      if (firing && Math.sin(s.time * 50) > 0) Art.blob(ctx, s.r * 2.35, 0, s.r * 0.3, s.r * 0.22, '#ffd27a');
+    },
+    grenadier(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: s.body, skin: '#9aa87a', helmet: '#5a4a2a', vest: '#4a3a1e' });
+      // Grenades on the bandolier, one raised in hand on the wind-up.
+      ctx.fillStyle = '#3f4a2c';
+      for (let i = 0; i < 3; i++) Art.blob(ctx, -s.r * 0.35 + i * s.r * 0.28, -s.r * 0.15 + i * s.r * 0.15, s.r * 0.13, s.r * 0.13, '#3f4a2c');
+      if (s.pose.tell > 0) Art.blob(ctx, -s.r * 0.2, -s.r * (1.2 + s.pose.tell * 0.4), s.r * 0.2, s.r * 0.2, '#3f4a2c');
+    },
+    riot(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: s.body, skin: '#8a9a7a', helmet: '#1c222c', visor: true });
+      // A riot shield on the facing side — the side that blocks.
+      const guard = e.stagger > 0 ? s.r * 0.4 : s.r * 0.9;
+      ctx.fillStyle = 'rgba(160,190,220,.55)';
+      ctx.fillRect(guard, -s.r * 1.1, s.r * 0.32, s.r * 2.1);
+      ctx.strokeStyle = '#2a3440'; ctx.lineWidth = 2;
+      ctx.strokeRect(guard, -s.r * 1.1, s.r * 0.32, s.r * 2.1);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `700 ${Math.round(s.r * 0.35)}px system-ui`;
+      ctx.save(); ctx.translate(guard + s.r * 0.22, 0); ctx.rotate(Math.PI / 2); ctx.scale(s.flip, 1);
+      ctx.textAlign = 'center'; ctx.fillText('POLICE', 0, 0); ctx.restore();
+    },
+    k9(ctx, e, s) {
+      Art.enemy.hound(ctx, e, s);
+      // A torn vest and the patch still hanging on.
+      ctx.fillStyle = '#2a2a2a';
+      ctx.fillRect(-s.r * 0.6, -s.r * 0.5, s.r * 1.1, s.r * 0.5);
+      ctx.fillStyle = '#c8b060';
+      ctx.fillRect(-s.r * 0.25, -s.r * 0.42, s.r * 0.35, s.r * 0.2);
+    },
+    sniper(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: '#4a5a3a', skin: '#8a9a7a', hood: '#3c4a2c', ghillie: true });
+      Art.rifle(ctx, s, 1.6);
+      // The scope glints.
+      if (s.pose.tell > 0) {
+        ctx.fillStyle = '#ff3b1f';
+        ctx.shadowBlur = 10; ctx.shadowColor = '#ff3b1f';
+        Art.blob(ctx, s.r * 1.05, -s.r * 0.35, 2.4, 2.4, '#ff3b1f');
+        ctx.shadowBlur = 0;
+      }
+    },
+
+    sunminion(ctx, e, s) {
+      // A little sun: a spiked corona around a hot core with one eye.
+      const r = s.r;
+      ctx.fillStyle = '#ff9a2e';
+      for (let i = 0; i < 8; i++) {
+        const ang = s.time * 1.4 + (i / 8) * Math.PI * 2;
+        const len = r * (1.45 + Math.sin(s.time * 5 + i) * 0.15);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(ang - 0.25) * r * 0.8, Math.sin(ang - 0.25) * r * 0.8);
+        ctx.lineTo(Math.cos(ang) * len, Math.sin(ang) * len);
+        ctx.lineTo(Math.cos(ang + 0.25) * r * 0.8, Math.sin(ang + 0.25) * r * 0.8);
+        ctx.fill();
+      }
+      ctx.shadowBlur = 18; ctx.shadowColor = '#ffd27a';
+      Art.blob(ctx, 0, 0, r * 0.85, r * 0.85, s.body);
+      ctx.shadowBlur = 0;
+      Art.blob(ctx, r * 0.15, 0, r * 0.35, r * 0.35, '#fff6d0');
+      Art.blob(ctx, r * 0.22, 0, r * 0.14, r * 0.18, '#6b3a08');
+    },
+
+    // Colonel Zee: an officer still in uniform, still in command.
+    colonel(ctx, e, s) {
+      Art.zombie(ctx, e, s, { shirt: '#4a5a32', skin: '#9aa87a', vest: '#3a4426', belly: 1.1 });
+      const r = s.r;
+      // Officer's cap and a chest of medals.
+      ctx.save();
+      ctx.rotate(0.18);
+      ctx.fillStyle = '#2a3218';
+      ctx.fillRect(r * 0.0, -r * 1.42, r * 0.62, r * 0.16);
+      ctx.fillRect(r * 0.05, -r * 1.56, r * 0.5, r * 0.16);
+      ctx.fillStyle = '#ffd479';
+      ctx.fillRect(r * 0.24, -r * 1.52, r * 0.1, r * 0.08);
+      for (let i = 0; i < 4; i++) {
+        ctx.fillStyle = ['#ffd479', '#c8452f', '#7ea8ff', '#ffd479'][i];
+        ctx.fillRect(-r * 0.3 + i * r * 0.14, -r * 0.4, r * 0.1, r * 0.14);
+      }
+      ctx.restore();
+      Art.rifle(ctx, s, 1.3);
+      // The bayonet glints as he winds up.
+      ctx.fillStyle = s.pose.tell > 0 ? '#ffffff' : '#c9ccd2';
+      ctx.fillRect(r * 1.45, -r * 0.33 - s.pose.tell * r * 0.15, r * 0.5, r * 0.08);
+    },
+
+    /* ---------------- minibosses ---------------- */
+
+    tank(ctx, e, s) {
+      const r = s.r;
+      const L = r * 2.3, W = r * 1.7;
+      const heading = Math.hypot(e.vx, e.vy) > 6 ? Math.atan2(e.vy, e.vx) : (e._heading || e.face);
+      e._heading = heading;
+      ctx.rotate(s.flip > 0 ? heading : Math.PI - heading);
+      ctx.fillStyle = 'rgba(0,0,0,.35)';
+      ctx.fillRect(-L / 2 + 4, -W / 2 + 6, L, W);
+      // Treads, rolling.
+      ctx.fillStyle = '#1e2214';
+      ctx.fillRect(-L / 2, -W / 2, L, W * 0.26);
+      ctx.fillRect(-L / 2, W / 2 - W * 0.26, L, W * 0.26);
+      ctx.fillStyle = '#3a3e2a';
+      const roll = (s.time * Math.hypot(e.vx, e.vy) * 0.3) % 10;
+      for (let x = -L / 2 + roll; x < L / 2; x += 10) {
+        ctx.fillRect(x, -W / 2, 3, W * 0.26);
+        ctx.fillRect(x, W / 2 - W * 0.26, 3, W * 0.26);
+      }
+      // Hull.
+      ctx.fillStyle = s.body;
+      ctx.fillRect(-L * 0.45, -W * 0.3, L * 0.9, W * 0.6);
+      ctx.fillStyle = s.dark;
+      ctx.fillRect(-L * 0.45, -W * 0.3, L * 0.9, W * 0.08);
+      ctx.restore(); ctx.save();
+      // The turret tracks you separately from the hull.
+      const aim = e.atk ? e.atk.angle : e.face;
+      ctx.translate(e.x, e.y);
+      ctx.rotate(aim);
+      ctx.fillStyle = '#2a2f1a';
+      ctx.fillRect(r * 0.3, -r * 0.13 + (e.atk && e.atk.phase === 'active' ? -2 : 0), r * 1.5, r * 0.26);
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#6b7a44';
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#2a2f1a';
+      ctx.fillRect(-r * 0.15, -r * 0.4, r * 0.3, r * 0.22);
+      // A star, because it is still army property.
+      ctx.fillStyle = '#e8e2d4';
+      Art.star(ctx, -r * 0.1, r * 0.15, r * 0.16);
+    },
+
+    battleship(ctx, e, s) {
+      const r = s.r;
+      const L = r * 3.2, W = r * 1.15;
+      // A ship does not turn to face you; its guns do.
+      if (s.flip < 0) ctx.scale(-1, 1);
+      const bob = Math.sin(s.time * 1.2) * 1.5;
+      ctx.translate(0, bob);
+      // Wake / water foam.
+      ctx.globalAlpha = 0.3;
+      Art.blob(ctx, 0, 0, L * 0.58, W * 0.75, '#bfe0ff');
+      ctx.globalAlpha = 1;
+      // Hull: pointed bow at +x.
+      ctx.fillStyle = s.dark;
+      ctx.beginPath();
+      ctx.moveTo(L / 2, 0);
+      ctx.lineTo(L * 0.3, -W / 2); ctx.lineTo(-L / 2, -W / 2);
+      ctx.lineTo(-L / 2, W / 2); ctx.lineTo(L * 0.3, W / 2);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#a8b0b8';
+      ctx.beginPath();
+      ctx.moveTo(L * 0.44, 0);
+      ctx.lineTo(L * 0.27, -W * 0.38); ctx.lineTo(-L * 0.46, -W * 0.38);
+      ctx.lineTo(-L * 0.46, W * 0.38); ctx.lineTo(L * 0.27, W * 0.38);
+      ctx.closePath(); ctx.fill();
+      // Deck planking.
+      ctx.strokeStyle = 'rgba(60,66,74,.35)';
+      ctx.lineWidth = 1;
+      for (let k = -2; k <= 2; k++) {
+        ctx.beginPath(); ctx.moveTo(-L * 0.45, k * W * 0.14); ctx.lineTo(L * 0.3, k * W * 0.14); ctx.stroke();
+      }
+      // Bridge and funnel.
+      ctx.fillStyle = '#4a525c';
+      ctx.fillRect(-L * 0.08, -W * 0.24, L * 0.18, W * 0.48);
+      ctx.fillStyle = '#2a2e34';
+      ctx.fillRect(-L * 0.22, -W * 0.14, L * 0.09, W * 0.28);
+      if (Math.random() < 0.3) Art.blob(ctx, -L * 0.18 - Math.random() * 8, -Math.random() * 6, 4, 4, 'rgba(60,60,60,.5)');
+      // Turrets, every one swung toward you.
+      const aim = (e.atk ? e.atk.angle : e.face);
+      const local = s.flip < 0 ? Math.PI - aim : aim;
+      for (const tx of [L * 0.28, L * 0.16, -L * 0.32]) {
+        ctx.save();
+        ctx.translate(tx, 0);
+        ctx.rotate(local);
+        ctx.fillStyle = '#20242a';
+        ctx.fillRect(r * 0.1, -r * 0.1, r * 0.55, r * 0.07);
+        ctx.fillRect(r * 0.1, r * 0.03, r * 0.55, r * 0.07);
+        ctx.fillStyle = '#7a848f';
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.2, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    },
+
+    colossus(ctx, e, s) {
+      const r = s.r;
+      const sw = s.gait.cycle * r * 0.2;
+      Art.limb(ctx, -r * 0.4, r * 0.5, -r * 0.5, r * 1.15 + sw, r * 0.38, s.dark);
+      Art.limb(ctx, r * 0.4, r * 0.5, r * 0.5, r * 1.15 - sw, r * 0.38, s.dark);
+      // A stacked body of stone with violet cracks.
+      ctx.fillStyle = s.body;
+      ctx.beginPath();
+      ctx.moveTo(-r * 1.0, r * 0.6); ctx.lineTo(-r * 0.85, -r * 0.8);
+      ctx.lineTo(r * 0.85, -r * 0.8); ctx.lineTo(r * 1.0, r * 0.6);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#d0a6ff'; ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.6 + Math.sin(s.time * 4) * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.4, -r * 0.6); ctx.lineTo(-r * 0.1, -r * 0.1); ctx.lineTo(-r * 0.3, r * 0.4);
+      ctx.moveTo(r * 0.3, -r * 0.7); ctx.lineTo(r * 0.5, -r * 0.2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      Art.blob(ctx, 0, -r * 1.05, r * 0.42, r * 0.36, s.body);
+      Art.eyes(ctx, 0, -r * 1.12, 4, 3.5, '#d0a6ff');
+      // Fists like boulders, thrown forward on the strike.
+      const reach = r * (0.95 + s.pose.tell * 0.5);
+      Art.blob(ctx, reach, r * 0.25, r * 0.42, r * 0.4, s.dark);
+      Art.blob(ctx, -r * 0.9, r * 0.25, r * 0.36, r * 0.34, s.dark);
+    },
+
+    broodmother(ctx, e, s) {
+      const r = s.r;
+      // Eight legs, scuttling.
+      ctx.strokeStyle = s.dark; ctx.lineWidth = r * 0.14; ctx.lineCap = 'round';
+      for (let i = 0; i < 4; i++) {
+        for (const side of [-1, 1]) {
+          const ph = Math.sin(s.time * 12 + i * 1.3 + (side > 0 ? 0 : 1.5)) * 0.25;
+          const bx = r * (0.45 - i * 0.3);
+          ctx.beginPath();
+          ctx.moveTo(bx, side * r * 0.3);
+          ctx.lineTo(bx + r * 0.3, side * r * (0.95 + ph));
+          ctx.lineTo(bx + r * (0.1 + ph), side * r * 1.4);
+          ctx.stroke();
+        }
+      }
+      Art.blob(ctx, -r * 0.45, 0, r * 0.8, r * 0.65, s.body);          // abdomen
+      ctx.fillStyle = '#c4e86b';
+      ctx.beginPath(); ctx.moveTo(-r * 0.6, -r * 0.2); ctx.lineTo(-r * 0.3, 0); ctx.lineTo(-r * 0.6, r * 0.2); ctx.fill();
+      Art.blob(ctx, r * 0.45, 0, r * 0.42, r * 0.38, s.dark);          // head
+      ctx.fillStyle = '#ff6b52';
+      for (let i = 0; i < 4; i++) ctx.fillRect(r * 0.55 + (i % 2) * r * 0.14, -r * 0.18 + Math.floor(i / 2) * r * 0.2, 2.6, 2.6);
+      // Fangs, open on the wind-up.
+      const open = 0.15 + s.pose.tell * 0.35;
+      Art.limb(ctx, r * 0.8, -r * 0.08, r * 1.05, -r * (0.1 + open), 2.4, '#e8dcc4');
+      Art.limb(ctx, r * 0.8, r * 0.08, r * 1.05, r * (0.1 + open), 2.4, '#e8dcc4');
+    },
+
+    hexknight(ctx, e, s) {
+      const r = s.r;
+      const sw = s.gait.cycle * r * 0.25;
+      Art.limb(ctx, -r * 0.25, r * 0.5, -r * 0.3, r * 1.15 + sw, r * 0.28, s.dark);
+      Art.limb(ctx, r * 0.25, r * 0.5, r * 0.3, r * 1.15 - sw, r * 0.28, s.dark);
+      ctx.fillStyle = '#3a2a4c';
+      ctx.fillRect(-r * 0.6, -r * 0.8, r * 1.2, r * 1.4);
+      ctx.fillStyle = s.body;
+      ctx.fillRect(-r * 0.6, -r * 0.8, r * 1.2, r * 0.3);
+      // A ragged cloak behind.
+      ctx.fillStyle = '#24183a';
+      ctx.beginPath(); ctx.moveTo(-r * 0.55, -r * 0.7); ctx.lineTo(-r * 1.1, r * 1.1 + Math.sin(s.time * 4) * 3); ctx.lineTo(-r * 0.3, r * 0.6); ctx.fill();
+      Art.blob(ctx, 0, -r * 1.1, r * 0.4, r * 0.42, '#3a2a4c');
+      ctx.fillStyle = '#e0b3ff';
+      ctx.shadowBlur = 10; ctx.shadowColor = '#c06aff';
+      ctx.fillRect(-r * 0.25, -r * 1.15, r * 0.5, r * 0.1);
+      ctx.shadowBlur = 0;
+      // The blade, hexed: it trails violet.
+      const swing = s.pose.tell;
+      ctx.save();
+      ctx.rotate(-0.9 + swing * 1.6);
+      ctx.fillStyle = '#d9c8ff';
+      ctx.shadowBlur = 16; ctx.shadowColor = '#c06aff';
+      ctx.fillRect(r * 0.3, -2.5, r * 1.6, 5);
+      ctx.restore();
+    },
+
+    abomination(ctx, e, s) {
+      const r = s.r;
+      const sw = s.gait.cycle * r * 0.2;
+      Art.limb(ctx, -r * 0.4, r * 0.5, -r * 0.55, r * 1.15 + sw, r * 0.42, s.dark);
+      Art.limb(ctx, r * 0.4, r * 0.5, r * 0.55, r * 1.15 - sw, r * 0.42, s.dark);
+      // A swollen mass of stitched flesh, one arm far bigger than the other.
+      Art.blob(ctx, 0, -r * 0.1, r * 1.05, r * 0.95, s.body);
+      ctx.strokeStyle = '#3a2a2a'; ctx.lineWidth = 1.6;
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.5 + i * r * 0.3, -r * 0.7);
+        ctx.lineTo(-r * 0.4 + i * r * 0.3, r * 0.4);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#c4e86b';
+      for (const [px, py] of [[-0.4, 0.1], [0.3, -0.3], [0.1, 0.45]]) {
+        ctx.globalAlpha = 0.6 + Math.sin(s.time * 3 + px * 9) * 0.3;
+        Art.blob(ctx, px * r, py * r, r * 0.16, r * 0.14, '#c4e86b');
+      }
+      ctx.globalAlpha = 1;
+      Art.blob(ctx, r * 0.25, -r * 1.05, r * 0.32, r * 0.3, '#9aa87a');
+      Art.eyes(ctx, r * 0.3, -r * 1.12, 3.2, 3, '#ff3b1f');
+      const reach = r * (1.0 + s.pose.tell * 0.5);
+      Art.blob(ctx, reach, r * 0.2, r * 0.55, r * 0.5, s.dark);       // the huge arm
+      Art.blob(ctx, -r * 0.95, r * 0.2, r * 0.26, r * 0.26, s.dark);
+    },
+
     johnspace(ctx, e, s) {
       // Ordinary bloke, hands in pockets, right up until he isn't.
       const sw = s.gait.cycle * s.r * 0.22;
@@ -537,7 +926,13 @@ const Art = {
       ctx.fillRect(-s.r * 0.55, -s.r * 0.75, s.r * 1.1, s.r * 1.4);
       Art.blob(ctx, 0, -s.r * 1.0, s.r * 0.42, s.r * 0.44, '#e8dcc4');
       Art.eyes(ctx, 0, -s.r * 1.08, 3.4, 3, e.enraged ? '#ff3b1f' : '#2b3c66');
-      if (e.enraged) {
+      if (e.companion) {
+        // On your side: hands out of the pockets only when there is a fight.
+        if (e.fighting) {
+          Art.blob(ctx, s.r * 1.1, s.r * 0.05, s.r * 0.3, s.r * 0.3, '#e8dcc4');
+          Art.blob(ctx, s.r * 0.6, -s.r * 0.45, s.r * 0.28, s.r * 0.28, '#e8dcc4');
+        }
+      } else if (e.enraged) {
         // Fists up.
         const reach = s.r * (0.85 + s.pose.tell * 0.5);
         Art.blob(ctx, reach, s.r * 0.1, s.r * 0.3, s.r * 0.3, '#e8dcc4');
@@ -567,6 +962,7 @@ Art.player = {
     ranger: { w: 13, h: 17, headR: 6.2, shoulders: 0.95, robe: false, helm: 'hood' },
     necromancer: { w: 14, h: 18, headR: 6.3, shoulders: 1.0, robe: true, helm: 'hood' },
     mage: { w: 13, h: 18, headR: 6.2, shoulders: 0.95, robe: true, helm: 'hood' },
+    ninja: { w: 13, h: 17, headR: 6.1, shoulders: 1.0, robe: false, helm: 'mask' },
   },
 
   draw(ctx, p, x, y, time) {
@@ -619,6 +1015,21 @@ Art.player = {
       ctx.beginPath();
       ctx.arc(0, -b.h * 0.64, b.headR + 1.4, Math.PI * 0.92, Math.PI * 2.08);
       ctx.closePath(); ctx.fill();
+    } else if (b.helm === 'mask') {
+      // Wrapped head, a slit for the eyes, and the tails of the knot.
+      ctx.fillStyle = p.cls.torso;
+      ctx.beginPath(); ctx.arc(0, -b.h * 0.64, b.headR + 1, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f0e6d2';
+      ctx.fillRect(-b.headR * 0.2, -b.h * 0.7, b.headR * 1.1, 2.4);
+      ctx.strokeStyle = p.cls.color;
+      ctx.lineWidth = 1.6;
+      const flow = Math.sin(time * 9) * 2;
+      ctx.beginPath();
+      ctx.moveTo(-b.headR, -b.h * 0.66);
+      ctx.lineTo(-b.headR - 7, -b.h * 0.6 + flow);
+      ctx.moveTo(-b.headR, -b.h * 0.62);
+      ctx.lineTo(-b.headR - 6, -b.h * 0.5 - flow);
+      ctx.stroke();
     } else if (b.helm === 'full') {
       ctx.fillStyle = p.cls.torso;
       ctx.beginPath(); ctx.arc(0, -b.h * 0.64, b.headR + 1.2, 0, Math.PI * 2); ctx.fill();

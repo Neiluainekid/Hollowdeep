@@ -22,6 +22,8 @@ const CLASSES = {
     tiers: [
       { weapon: 'Wooden Sword', dmgMul: 1, cdMul: 1, blade: '#c9a86e' },
       { weapon: 'Silver Sword', dmgMul: 1.55, cdMul: 0.92, blade: '#dfe6f0' },
+      // Update 4.0: Day-ZEE hands out a third tier to every class.
+      { weapon: 'Combat Saber', dmgMul: 2.2, cdMul: 0.86, blade: '#b8f0ff' },
     ],
 
     maxHp: 140,
@@ -137,6 +139,7 @@ const CLASSES = {
     tiers: [
       { weapon: 'Slingshot', dmgMul: 1, cdMul: 1, tint: '#cbd8f0' },
       { weapon: 'Assault Rifle', dmgMul: 1.35, cdMul: 0.45, tint: '#ffd479' },
+      { weapon: 'Marksman Rifle', dmgMul: 1.95, cdMul: 0.42, tint: '#9fffb0' },
     ],
 
     maxHp: 85,
@@ -233,7 +236,7 @@ const CLASSES = {
         game.fx.text(p.x, p.y - 30, `grenade in ${m}:${String(s).padStart(2, '0')}`, '#8fa0b8', 12);
         return;
       }
-      p.minionCds.grenades = 85;
+      p.minionCds.grenades = Math.max(20, 85 - (p.grenadeCdCut || 0));
       const range = Math.min(U.dist(p.x, p.y, game.mouseWorld.x, game.mouseWorld.y), 420);
       const tx = p.x + Math.cos(p.aim) * range;
       const ty = p.y + Math.sin(p.aim) * range;
@@ -306,6 +309,7 @@ Object.assign(CLASSES, {
     tiers: [
       { weapon: 'Riot Shield', dmgMul: 1, cdMul: 1, plate: '#9fb4cc', trim: '#5c7490' },
       { weapon: 'Spiky Shield', dmgMul: 1.5, cdMul: 0.9, plate: '#c2ccd8', trim: '#8a6a42', spikes: true },
+      { weapon: 'Bastion Shield', dmgMul: 2.1, cdMul: 0.82, plate: '#d6dde6', trim: '#4a6a3a', spikes: true },
     ],
 
     maxHp: 200,
@@ -339,7 +343,8 @@ Object.assign(CLASSES, {
         {
           // Update 3.0.
           id: 'ricochet', name: 'Ricochet', icon: '↻', color: '#4fd0a8',
-          desc: 'Heavy rolls you forward. Click M1 on the GREEN as you meet an enemy or wall to bounce off in a blue shockwave and keep rolling. Miss: yellow, -50 stamina.',
+          // Update 4.0: no more timing window — you mash M1 to fill a bar.
+          desc: 'Heavy rolls you forward. MASH M1 to fill the bounce bar: full, and the next wall or enemy throws you off in a blue shockwave. Hit something with it unfilled and you lose 100 stamina for 1s.',
         },
       ],
     },
@@ -378,7 +383,7 @@ Object.assign(CLASSES, {
       const dmg = 54 * power * p.power * p.heavyMul;
       for (const e of game.enemyHash.query(p.x, p.y, radius, [])) {
         if (e.dead || U.dist(p.x, p.y, e.x, e.y) > radius) continue;
-        e.takeDamage(dmg, game, p.x, p.y, 640 * p.knockMul, false);
+        e.takeDamage(dmg, game, p.x, p.y, 640 * p.knockMul, false, 'player');
         e.stun = Math.max(e.stun, 0.8);
       }
       game.impactFreeze(0.09);
@@ -486,9 +491,9 @@ const ELEMENTS = [
   },
   {
     id: 'ice', name: 'Ice', icon: '🜄', color: '#7ec8ff',
-    primaryName: 'Ice Shard', heavyName: 'Ice Wall',
-    desc: 'Shards hit for 30–40, slow, and rarely freeze outright; charge to hurl a wall.',
-    cost: 9, heavyCostFrac: 0.7,
+    primaryName: 'Ice Shard', heavyName: 'Blizzard',
+    desc: 'Shards hit for 30–40, slow, and rarely freeze outright; charge for a Blizzard — every enemy around you slowed and hit for 200 over 2s. 50 mana.',
+    cost: 9, heavyCost: 50,
 
     primary(p, game) {
       p.castProjectile(game, p.aim, {
@@ -497,14 +502,18 @@ const ELEMENTS = [
       });
       game.audio.cast('ice', false);
     },
+    /* Update 4.0: the Ice Wall is replaced by a Blizzard. For two seconds a
+       storm rides with you: everything in it is slowed to a crawl and takes
+       200 damage over the two seconds (two 100-damage ticks). 50 mana flat. */
     heavy(p, game) {
-      p.castProjectile(game, p.aim, {
-        damage: 60 * p.power, speed: 380, life: 1.6, radius: 18,
-        color: '#dff1ff', knock: 420, trailColor: '#7ec8ff',
-        aoe: { radius: 110, damage: 20 * p.power },
-      });
-      game.fx.addShake(6);
-      game.audio.cast('ice', true);
+      game.zones.push(new Zone('blizzard', p.x, p.y, {
+        radius: 430 * (p.frostMul || 1), life: 2, tickEvery: 1, damage: 100,
+        power: p.power * p.heavyMul, follow: p,
+      }));
+      game.fx.ring(p.x, p.y, 90, '#dff1ff', 40);
+      game.fx.addShake(8);
+      game.fx.text(p.x, p.y - 50, 'BLIZZARD', '#dff1ff', 20);
+      game.audio.blizzard();
     },
   },
   {
@@ -557,6 +566,7 @@ Object.assign(CLASSES, {
     tiers: [
       { weapon: 'Bone Staff', dmgMul: 1, cdMul: 1, wood: '#cfc7ad', gem: '#7fd6a6' },
       { weapon: 'Rot Staff', dmgMul: 1.5, cdMul: 0.9, wood: '#6b5a48', gem: '#b7f542' },
+      { weapon: 'Plague Staff', dmgMul: 2.1, cdMul: 0.82, wood: '#3a4a2a', gem: '#9fff4a' },
     ],
 
     maxHp: 100,
@@ -617,6 +627,7 @@ Object.assign(CLASSES, {
     tiers: [
       { weapon: 'Wooden Staff', dmgMul: 1, cdMul: 1, wood: '#8a6a42', gem: '#c07bff' },
       { weapon: 'Iron Staff', dmgMul: 1.5, cdMul: 0.88, wood: '#6d737a', gem: '#e0b3ff' },
+      { weapon: 'Storm Staff', dmgMul: 2.1, cdMul: 0.8, wood: '#4a4f5a', gem: '#8fe8ff' },
     ],
 
     maxHp: 82,
@@ -643,7 +654,8 @@ Object.assign(CLASSES, {
 
     onHeavy(p, game, power) {
       const el = Seq.get(ELEMENTS, p.slot);
-      const cost = p.maxMana * el.heavyCostFrac * p.costMul;
+      // Most heavies cost a share of the pool; the Blizzard is a flat 50.
+      const cost = (el.heavyCost !== undefined ? el.heavyCost : p.maxMana * el.heavyCostFrac) * p.costMul;
       if (!p.spendMana(cost)) return;
       el.heavy(p, game, power);
     },
@@ -661,6 +673,101 @@ Object.assign(CLASSES, {
       const pulse = p.charging ? 5.5 + Math.sin(p.chargeT * 26) * 2 : 4.5;
       ctx.beginPath(); ctx.arc(18, -14, pulse, 0, Math.PI * 2); ctx.fill();
       ctx.shadowBlur = 0;
+    },
+  },
+});
+
+/* ------------------------------------------------------------------ */
+/* Update 4.0: the Ninja. Bare fists, a smoke bomb that turns enemies    */
+/* on each other, and an Ambush Mode that makes you unseen — strike     */
+/* from hiding and the blow is a guaranteed 100-damage critical.        */
+/* ------------------------------------------------------------------ */
+
+Object.assign(CLASSES, {
+  ninja: {
+    id: 'ninja',
+    className: 'Ninja',
+    icon: '✊',
+    color: '#9b8cff',
+    torso: '#2a2438',
+    dashColors: ['#9b8cff', '#e0dcff'],
+    energyName: 'Stamina',
+    energyBar: 'linear-gradient(180deg,#9b8cff,#3d2f7a)',
+
+    tiers: [
+      { weapon: 'Bare Fists', dmgMul: 1, cdMul: 1, wrap: '#d8d2c4' },
+      { weapon: 'Iron Knuckles', dmgMul: 1.5, cdMul: 0.9, wrap: '#9aa4b0' },
+      { weapon: 'Shadow Claws', dmgMul: 2.1, cdMul: 0.82, wrap: '#b49bff' },
+    ],
+
+    maxHp: 85,                 // as fragile as the Ranger
+    speed: 196,
+    maxEnergy: 100,
+    energyRegen: 30,
+    damageReduction: 0,
+
+    primary: {
+      name: 'Fists', cd: 0.2, cost: 0, damage: 12,
+      range: 52, arc: 1.3, knock: 90, wind: 0.04,
+    },
+    heavy: { name: 'Smoke Bomb', cd: 0.4, cost: 0, chargeTime: 0.2 },
+    mobility: { name: 'Shadow Step', cost: 22, cd: 0.42, speed: 800, time: 0.16, iframes: 0.28 },
+
+    // The bomb: 10s cooldown, a cloud that makes everything in it dizzy.
+    smoke: { cooldown: 10, radius: 120, life: 6, dizzy: 2.5, poison: 5 },
+    ambush: { damage: 100, rehide: 3 },
+    heavyCdKey: 'smoke',       // the HUD shows this cooldown on the heavy
+    lifeOnKill: 1,
+
+    loadout: {
+      kind: 'stance', label: 'Stance', options: [
+        {
+          id: 'fists', name: 'Open Fists', icon: '✊', color: '#d8d2c4',
+          desc: 'Quick alternating jabs. Every enemy can see you.',
+        },
+        {
+          id: 'ambush', name: 'Ambush Mode', icon: '◐', color: '#9b8cff',
+          desc: 'Vanish: enemies lose you. Your first blow from hiding is a 100-damage critical. You hide again 3s after your last attack.',
+          speedMul: 0.92,
+        },
+      ],
+    },
+
+    blurb: 'Smoke turns them on each other. Strike unseen for a 100-damage critical.',
+
+    onPrimary(p, game) {
+      const a = this.primary;
+      const ambush = p.isUnseen();
+      p.startSwing(game, {
+        damage: a.damage * p.power,
+        range: a.range * p.rangeMul,
+        arc: a.arc * p.arcMul,
+        knock: a.knock * p.knockMul,
+        dur: 0.16, wind: a.wind, heavy: false, stun: ambush ? 0.6 : 0,
+        ambush, fist: true,
+      });
+      game.audio.punch(ambush);
+    },
+
+    onHeavy(p, game) { p.throwSmoke(game); },
+
+    drawWeapon(ctx, p, game) {
+      // Two wrapped fists; the leading one snaps out on each jab.
+      const jab = p.swing ? Math.sin(U.clamp(p.swing.t / p.swing.dur, 0, 1) * Math.PI) : 0;
+      const lead = p.swing && p.swing.side === 1 ? 1 : -1;
+      for (const side of [-1, 1]) {
+        const out = side === lead ? jab * 12 : 0;
+        ctx.fillStyle = p.tier.wrap;
+        ctx.beginPath(); ctx.arc(2 + out, side * 6, 4.4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(0,0,0,.25)';
+        ctx.fillRect(out - 1, side * 6 - 1, 3, 2);
+      }
+      if (p.isUnseen()) {
+        ctx.globalAlpha = 0.5 + Math.sin((game ? game.time : 0) * 8) * 0.2;
+        ctx.strokeStyle = '#9b8cff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(4, 0, 12, -1, 1); ctx.stroke();
+      }
     },
   },
 });
@@ -841,15 +948,160 @@ const PERKS = [
     desc: 'Take 15% less damage and gain +12 health.',
     apply(p) { p.dr = 1 - (1 - p.dr) * 0.85; p.maxHp += 12; p.hp += 12; },
   },
+
+  // --- fists / ninja (Update 4.0) ---
+  {
+    id: 'quickFists', name: 'Hundred Fists', icon: '✊', only: 'ninja',
+    desc: 'Jab 20% faster.',
+    apply(p) { p.cdMul *= 0.8; },
+  },
+  {
+    id: 'venomFists', name: 'Venom Knuckles', icon: '☣', only: 'ninja',
+    desc: 'Every punch poisons for 6 a second over 3 seconds.',
+    apply(p) { p.fistPoison = (p.fistPoison || 0) + 6; },
+  },
+  {
+    id: 'thickSmoke', name: 'Thick Smoke', icon: '☁', only: 'ninja',
+    desc: 'Smoke bombs last 3 seconds longer and spread 20% wider.',
+    apply(p) { p.smokeLife = (p.smokeLife || 0) + 3; p.smokeMul = (p.smokeMul || 1) + 0.2; },
+  },
+  {
+    id: 'assassin', name: 'Assassin', icon: '◐', only: 'ninja',
+    desc: 'Ambush criticals hit 50% harder.',
+    apply(p) { p.ambushMul = (p.ambushMul || 1) + 0.5; },
+  },
+  {
+    id: 'evasive', name: 'Evasive', icon: '≫', only: 'ninja',
+    desc: 'Take 12% less damage and move 6% faster.',
+    apply(p) { p.dr = 1 - (1 - p.dr) * 0.88; p.moveMul += 0.06; },
+  },
+  {
+    id: 'ironBody', name: 'Iron Body', icon: '▣', only: 'ninja',
+    desc: '+20 maximum health and +10% damage.',
+    apply(p) { p.maxHp += 20; p.hp += 20; p.dmgMul += 0.1; },
+  },
+
+  /* ---------------- Update 4.0: Forgotten Shrine boons ----------------
+     Only the blue Forgotten Shrines offer these, and every shrine offers at
+     least one — your class's own first. They are the reason to go out of
+     your way for a shrine. */
+  {
+    id: 'ancestral', name: 'Ancestral Echo', icon: '✧', shrine: true,
+    desc: '+10% damage and +15 maximum health.',
+    apply(p) { p.dmgMul += 0.1; p.maxHp += 15; p.hp += 15; },
+  },
+  {
+    id: 'secondSkin', name: 'Second Skin', icon: '⛨', shrine: true,
+    desc: 'Take 10% less damage from everything.',
+    apply(p) { p.dr = 1 - (1 - p.dr) * 0.9; },
+  },
+  {
+    id: 'bladeStorm', name: 'Blade Storm', icon: '⚔', only: 'melee', shrine: true,
+    desc: '+25% damage and a 10% wider arc.',
+    apply(p) { p.dmgMul += 0.25; p.arcMul += 0.1; },
+  },
+  {
+    id: 'warlord', name: 'Warlord', icon: '♛', only: 'melee', shrine: true,
+    desc: '+20 maximum health and 4 more health per kill.',
+    apply(p) { p.maxHp += 20; p.hp += 20; p.lifeOnKill += 4; },
+  },
+  {
+    id: 'riposte', name: 'Riposte', icon: '↯', only: 'melee', shrine: true,
+    desc: 'Your parry window is 40% longer.',
+    apply(p) { p.parryMul += 0.4; },
+  },
+  {
+    id: 'deadeye', name: 'Deadeye', icon: '◎', only: 'ranger', shrine: true,
+    desc: '+18% critical chance.',
+    apply(p) { p.critBonus += 0.18; },
+  },
+  {
+    id: 'quiver', name: 'Bottomless Quiver', icon: '◈', only: 'ranger', shrine: true,
+    desc: '+40 maximum ammo and 25% faster refills.',
+    apply(p) { p.maxEnergy += 40; p.energy += 40; p.regenMul += 0.25; },
+  },
+  {
+    id: 'demolitions', name: 'Demolitions', icon: '✹', only: 'ranger', shrine: true,
+    desc: 'The hand grenade comes back 35 seconds sooner.',
+    apply(p) { p.grenadeCdCut = (p.grenadeCdCut || 0) + 35; },
+  },
+  {
+    id: 'unbreakable', name: 'Unbreakable', icon: '⛨', only: 'tanker', shrine: true,
+    desc: '+40 maximum health and 15% less damage.',
+    apply(p) { p.maxHp += 40; p.hp += 40; p.dr = 1 - (1 - p.dr) * 0.85; },
+  },
+  {
+    id: 'juggernaut', name: 'Juggernaut', icon: '➤', only: 'tanker', shrine: true,
+    desc: 'Heavy Dash, Heavy Slam and the Ricochet roll hit 40% harder.',
+    apply(p) { p.heavyMul += 0.4; },
+  },
+  {
+    id: 'pinball', name: 'Pinball Wizard', icon: '↻', only: 'tanker', shrine: true,
+    desc: 'Each click fills the ricochet bar 50% more.',
+    apply(p) { p.mashMul = (p.mashMul || 1) + 0.5; },
+  },
+  {
+    id: 'legion', name: 'Legion', icon: '☠', only: 'necromancer', shrine: true,
+    desc: 'One more minion may stand at once.',
+    apply(p) { p.minionCap = (p.minionCap || 0) + 1; },
+  },
+  {
+    id: 'soulSiphon', name: 'Soul Siphon', icon: '✚', only: 'necromancer', shrine: true,
+    desc: 'Every kill returns 3 health and 10 mana.',
+    apply(p) { p.lifeOnKill += 3; p.manaOnKill = (p.manaOnKill || 0) + 10; },
+  },
+  {
+    id: 'plaguelord', name: 'Plaguelord', icon: '✹', only: 'necromancer', shrine: true,
+    desc: 'Your minions hit 30% harder and come back 20% sooner.',
+    apply(p) { p.minionPower += 0.3; p.summonCdMul *= 0.8; },
+  },
+  {
+    id: 'archmage', name: 'Archmage', icon: '✶', only: 'mage', shrine: true,
+    desc: '+30% spell damage.',
+    apply(p) { p.dmgMul += 0.3; },
+  },
+  {
+    id: 'manaTide', name: 'Mana Tide', icon: '◈', only: 'mage', shrine: true,
+    desc: '+30 maximum mana and 50% faster regeneration.',
+    apply(p) { p.maxMana += 30; p.mana += 30; p.regenMul += 0.5; },
+  },
+  {
+    id: 'glacial', name: 'Glacial Heart', icon: '❄', only: 'mage', shrine: true,
+    desc: 'The Blizzard covers 35% more ground.',
+    apply(p) { p.frostMul = (p.frostMul || 1) + 0.35; },
+  },
+  {
+    id: 'shadowVeil', name: 'Shadow Veil', icon: '◐', only: 'ninja', shrine: true,
+    desc: 'You slip back into hiding twice as fast.',
+    apply(p) { p.rehideMul = (p.rehideMul || 1) * 0.5; },
+  },
+  {
+    id: 'killerInstinct', name: 'Killer Instinct', icon: '☠', only: 'ninja', shrine: true,
+    desc: 'Ambush criticals hit 60% harder.',
+    apply(p) { p.ambushMul = (p.ambushMul || 1) + 0.6; },
+  },
+  {
+    id: 'toxicCloud', name: 'Toxic Cloud', icon: '☣', only: 'ninja', shrine: true,
+    desc: 'Smoke spreads 40% wider and the bomb is ready 3 seconds sooner.',
+    apply(p) { p.smokeMul = (p.smokeMul || 1) + 0.4; p.smokeCdCut = (p.smokeCdCut || 0) + 3; },
+  },
 ];
 
-function rollPerks(classId, taken, count = 3) {
-  const pool = PERKS.filter(p => (!p.only || p.only === classId));
+function rollPerks(classId, taken, count = 3, source = 'level') {
+  // Shrine boons only ever come from a Forgotten Shrine.
+  const pool = PERKS.filter(p => (!p.only || p.only === classId) && (!p.shrine || source === 'shrine'));
   // Repeatable stat perks can show up again; unique mechanics cannot.
   const unique = new Set([
     'whirlwind', 'ricochet', 'sniper', 'twinshot', 'momentum',
     'grimResolve', 'boneHarvest', 'elementalist',
+    'demolitions', 'legion', 'shadowVeil', 'venomFists',
   ]);
   const avail = pool.filter(p => !(unique.has(p.id) && taken.includes(p.id)));
-  return U.shuffle(avail).slice(0, count);
+  if (source !== 'shrine') return U.shuffle(avail).slice(0, count);
+  // A shrine always offers at least one of its own boons, your class first.
+  const own = U.shuffle(avail.filter(p => p.shrine));
+  own.sort((a, b) => (b.only === classId) - (a.only === classId));
+  const first = own.slice(0, 1);
+  const rest = U.shuffle(avail.filter(p => !first.includes(p))).slice(0, count - first.length);
+  return U.shuffle([...first, ...rest]);
 }

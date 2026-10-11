@@ -1,241 +1,6 @@
 /* Game shell: loop, camera, renderer, lighting, world interaction, UI. */
 'use strict';
 
-class Audio2 {
-  constructor() {
-    this.ctx = null;
-    this.enabled = true;
-    this.unlocked = false;
-    this.bindUnlock();
-  }
-
-  /* Browsers keep web audio silent until a user gesture, and phones are
-     strict about it: the context has to be created or resumed inside a tap,
-     and older iOS also wants a sound actually started in that tap. Every
-     gesture below keeps doing this (not just the first), because iOS
-     "interrupts" audio again whenever the screen locks, the app is switched
-     away from, or a call or notification comes in. */
-  bindUnlock() {
-    const kick = () => this.resume();
-    for (const t of ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown']) {
-      window.addEventListener(t, kick, { capture: true, passive: true });
-    }
-    // Coming back to the tab or app: try again (a tap will finish the job
-    // if the browser insists on one).
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && this.ctx) this.resume(false); });
-    window.addEventListener('pageshow', () => { if (this.ctx) this.resume(false); });
-  }
-
-  resume(fromGesture = true) {
-    if (!this.ctx) {
-      if (!fromGesture) return;
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      // iPhone: play through the ring/silent switch, like a game should.
-      // Without this, Safari treats web audio as ambient and the switch
-      // mutes the whole game. Safari 16.4+; elsewhere it is simply absent.
-      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* ignore */ }
-      this.ctx = new AC();
-    }
-    // 'interrupted' is iOS's own paused state (screen lock, calls); treat it
-    // like 'suspended' — anything but running gets resumed.
-    if (this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
-      const p = this.ctx.resume();
-      if (p && p.catch) p.catch(() => {});
-    }
-    if (!this.unlocked && fromGesture) {
-      // One silent sample, started inside the gesture: the old-iOS unlock.
-      try {
-        const b = this.ctx.createBuffer(1, 1, 22050);
-        const s = this.ctx.createBufferSource();
-        s.buffer = b;
-        s.connect(this.ctx.destination);
-        s.start(0);
-        this.unlocked = true;
-      } catch { /* try again on the next gesture */ }
-    }
-  }
-  blip(freq, dur = 0.08, gain = 0.12, type = 'square') {
-    if (!this.enabled || !this.ctx) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq * 0.55), t + dur);
-    g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(g).connect(this.ctx.destination);
-    osc.start(t);
-    osc.stop(t + dur + 0.02);
-  }
-
-  /* One second of white noise, generated once. Everything percussive below is
-     this buffer through a moving filter — a swing is a noise sweep, not a
-     square wave, which is why the old sword sounded like a menu beep. */
-  noiseBuffer() {
-    if (this._noise) return this._noise;
-    const len = this.ctx.sampleRate;
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-    this._noise = buf;
-    return buf;
-  }
-
-  noise({ dur = 0.18, gain = 0.2, from = 900, to = 200, q = 1.2, type = 'bandpass', delay = 0 }) {
-    if (!this.enabled || !this.ctx) return;
-    const t = this.ctx.currentTime + delay;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer();
-    src.playbackRate.value = 1;
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = type;
-    filter.Q.value = q;
-    filter.frequency.setValueAtTime(from, t);
-    filter.frequency.exponentialRampToValueAtTime(Math.max(60, to), t + dur);
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(gain, t + dur * 0.12);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(filter).connect(g).connect(this.ctx.destination);
-    src.start(t);
-    src.stop(t + dur + 0.02);
-  }
-
-  // Air moving past a blade: a bright band sweeping down, plus low body on
-  // the heavy version so a Cleave lands with weight instead of pitch.
-  swordSwing(heavy) {
-    if (heavy) {
-      this.noise({ dur: 0.34, gain: 0.26, from: 2600, to: 160, q: 0.9 });
-      this.blip(78, 0.26, 0.16, 'sine');
-      this.noise({ dur: 0.12, gain: 0.14, from: 320, to: 90, q: 2.2, delay: 0.05 });
-    } else {
-      this.noise({ dur: 0.16, gain: 0.17, from: 3200, to: 520, q: 1.6 });
-    }
-  }
-
-  // A hit landing — short, dry, and pitched by how hard it was.
-  impact(heavy) {
-    this.noise({ dur: heavy ? 0.2 : 0.1, gain: heavy ? 0.3 : 0.18, from: heavy ? 700 : 1400, to: 70, q: 0.8, type: 'lowpass' });
-    this.blip(heavy ? 90 : 170, heavy ? 0.1 : 0.05, heavy ? 0.16 : 0.1, 'triangle');
-  }
-
-  // Telegraphs are audio cues too — you should be able to hear a red coming
-  // from off-screen and start moving before you see it.
-  telegraph(kind) {
-    if (kind === 'heavy') {
-      // A deep gong: the one attack a boss lets you parry.
-      this.blip(110, 0.5, 0.15, 'triangle');
-      this.blip(220, 0.4, 0.08, 'sine');
-      return;
-    }
-    if (kind === 'red') {
-      this.blip(150, 0.3, 0.13, 'sawtooth');
-      this.noise({ dur: 0.3, gain: 0.1, from: 260, to: 90, q: 3 });
-    } else {
-      this.blip(520, 0.14, 0.07, 'triangle');
-    }
-  }
-
-  parryOpen() { this.noise({ dur: 0.07, gain: 0.07, from: 2200, to: 1100, q: 3 }); }
-
-  parryHit() {
-    // Bright metallic ring: two detuned partials plus a short noise chink.
-    this.blip(1180, 0.26, 0.14, 'triangle');
-    this.blip(1760, 0.22, 0.09, 'sine');
-    this.noise({ dur: 0.14, gain: 0.16, from: 6000, to: 1800, q: 1.2, type: 'highpass' });
-  }
-
-  dodge() { this.noise({ dur: 0.16, gain: 0.09, from: 1200, to: 300, q: 1 }); }
-
-  // Each element gets its own voice so you can cast without looking down.
-  cast(element, heavy) {
-    const g = heavy ? 0.2 : 0.11;
-    switch (element) {
-      case 'fire':
-        this.noise({ dur: heavy ? 0.4 : 0.2, gain: g, from: 1400, to: 180, q: 0.8 });
-        this.blip(heavy ? 90 : 300, heavy ? 0.3 : 0.12, g, 'sawtooth');
-        break;
-      case 'earth':
-        this.noise({ dur: heavy ? 0.34 : 0.2, gain: g, from: 500, to: 90, q: 1.6, type: 'lowpass' });
-        this.blip(heavy ? 120 : 210, 0.16, g * 0.8, 'square');
-        break;
-      case 'ice':
-        this.blip(heavy ? 420 : 1500, heavy ? 0.26 : 0.1, g, 'sine');
-        this.noise({ dur: heavy ? 0.3 : 0.12, gain: g * 0.9, from: 7000, to: 2000, q: 2, type: 'highpass' });
-        break;
-      case 'air':
-        this.noise({ dur: heavy ? 0.5 : 0.26, gain: g, from: 900, to: 2600, q: 0.6 });
-        break;
-      default:  // bone
-        this.blip(heavy ? 180 : 520, 0.12, g, 'triangle');
-        this.noise({ dur: 0.14, gain: 0.08, from: 1800, to: 500, q: 2 });
-    }
-  }
-
-  summon() {
-    this.blip(180, 0.3, 0.13, 'sawtooth');
-    this.blip(270, 0.26, 0.08, 'triangle');
-    this.noise({ dur: 0.3, gain: 0.09, from: 380, to: 120, q: 2.4 });
-  }
-
-  explode() {
-    this.noise({ dur: 0.42, gain: 0.3, from: 900, to: 60, q: 0.6, type: 'lowpass' });
-    this.blip(70, 0.32, 0.2, 'sine');
-  }
-
-  freeze() {
-    this.blip(1900, 0.4, 0.14, 'sine');
-    this.blip(2600, 0.3, 0.08, 'triangle');
-    this.noise({ dur: 0.35, gain: 0.14, from: 9000, to: 2400, q: 1.4, type: 'highpass' });
-  }
-
-  jarona() {
-    // A little rising yelp before the impact.
-    if (!this.enabled || !this.ctx) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(300, t);
-    osc.frequency.exponentialRampToValueAtTime(900, t + 0.18);
-    g.gain.setValueAtTime(0.14, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
-    osc.connect(g).connect(this.ctx.destination);
-    osc.start(t); osc.stop(t + 0.26);
-    this.explode();
-  }
-
-  // Rising yelp per bounce, with the shout on the finisher.
-  jaronaHit(n, final) {
-    if (!this.enabled || !this.ctx) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'square';
-    const base = 260 + n * 110;
-    osc.frequency.setValueAtTime(base, t);
-    osc.frequency.exponentialRampToValueAtTime(base * (final ? 3 : 1.7), t + (final ? 0.2 : 0.1));
-    g.gain.setValueAtTime(final ? 0.15 : 0.09, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + (final ? 0.26 : 0.13));
-    osc.connect(g).connect(this.ctx.destination);
-    osc.start(t); osc.stop(t + 0.28);
-    this.impact(final);
-  }
-
-  slingShot(tier, heavy = false) {
-    if (tier > 0) {
-      // Assault rifle: a crack with a tail, not an elastic snap.
-      this.noise({ dur: 0.09, gain: 0.24, from: 5200, to: 700, q: 0.7, type: 'highpass' });
-      this.blip(210, 0.05, 0.12, 'sawtooth');
-      return;
-    }
-    this.noise({ dur: heavy ? 0.16 : 0.07, gain: heavy ? 0.2 : 0.12, from: heavy ? 1800 : 2400, to: 400, q: 2.4 });
-    this.blip(heavy ? 300 : 620, heavy ? 0.1 : 0.04, 0.08, 'triangle');
-  }
-}
-
 class Game {
   constructor() {
     this.canvas = document.getElementById('game');
@@ -295,6 +60,12 @@ class Game {
     this.speech = null;           // boss line over its head
     this.invView = 0;             // inventory: 0 = you, 1.. = companions
     this.shopProp = null;
+    // Update 4.0
+    this.beams = [];              // lines of light (Prejudice, laser sweeps)
+    this.zaps = [];               // chain-lightning flashes (Storm modifiers)
+    this.hard = false;            // hard mode: chosen on the title screen
+    this.activeMiniboss = null;   // the nearest awake miniboss, for its bar
+    this.heartT = 0;              // low-health heartbeat
 
     this.bindEvents();
     this.resize();
@@ -381,6 +152,7 @@ class Game {
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { this.input.dash = true; e.preventDefault(); }
       if (e.code === 'Space' && !e.repeat) { this.input.parry = true; this.input.parryPressed = true; e.preventDefault(); }
       if (e.code === 'KeyE') this.interact();
+      if (e.code === 'KeyM' && !e.repeat) this.toggleMusic();
       if (e.code === 'KeyR' && !e.repeat) this.openRoulette();
       if (e.code === 'Tab') { e.preventDefault(); this.toggleMap(); }
       if (e.code === 'Escape') this.togglePause();
@@ -422,6 +194,32 @@ class Game {
     document.getElementById('invPrev').onclick = () => this.cycleInventory(-1);
     document.getElementById('invNext').onclick = () => this.cycleInventory(1);
     document.getElementById('againBtn').onclick = () => location.reload();
+    document.getElementById('musicBtn').onclick = () => this.toggleMusic();
+  }
+
+  // M, or the pause menu: music on and off (remembered between visits).
+  toggleMusic() {
+    this.audio.resume();
+    const on = this.audio.music.toggle();
+    document.getElementById('musicBtn').textContent = `Music: ${on ? 'On' : 'Off'}`;
+    if (this.state === 'playing') this.toast(`Music ${on ? 'on' : 'off'} (M)`, 1.6);
+  }
+
+  /* Which track should be playing right now. The sequencer crossfades. */
+  updateMusic() {
+    let track = null;
+    if (this.dungeon && this.state !== 'title' && this.state !== 'end') {
+      const def = Maps.byNumber(this.mapNumber);
+      track = def.music || 'tripolisis';
+      const boss = this.boss && !this.boss.dead ? this.boss : null;
+      if (boss || this.pendingFinal) {
+        track = boss && (boss.type === 'judgement' || boss.type === 'judgement2') ? 'bossFinal' : 'boss';
+      } else if (this.activeMiniboss || (this.johnSpace && (this.johnSpace.trial || this.johnSpace.enraged))) {
+        track = 'miniboss';
+      }
+    }
+    this.audio.music.play(track);
+    this.audio.music.update();
   }
 
   /* ---------------- run lifecycle ---------------- */
@@ -430,8 +228,9 @@ class Game {
      `resume` rebuilds one from disk; `loadMap` swaps the world underneath a
      player who carries across. */
 
-  start(classId, seedText, slot = Save.SLOT_FIRST) {
+  start(classId, seedText, slot = Save.SLOT_FIRST, hard = false) {
     this.audio.resume();
+    this.hard = !!hard;
     this.saveSlot = Save.validSlot(slot) ? slot : Save.SLOT_FIRST;
     const base = seedText && seedText.trim()
       ? U.hashSeed(seedText.trim())
@@ -451,7 +250,8 @@ class Game {
     });
 
     this.loadMap(Maps.FIRST, { fresh: true });
-    this.toast(`${this.player.weaponName} — ${this.player.cls.className}. ${this.player.cls.blurb}`, 4.5);
+    this.toast(`${this.player.weaponName} — ${this.player.cls.className}. ${this.player.cls.blurb}`
+      + (this.hard ? ' HARD MODE: good luck.' : ''), 4.5);
   }
 
   loadMap(number, opts = {}) {
@@ -473,6 +273,9 @@ class Game {
     this.minions = [];
     this.zones = [];
     this.impacts = [];
+    this.beams = [];
+    this.zaps = [];
+    this.activeMiniboss = null;
     this.companions = [];
     this.companionKinds = new Set();
     this.johnSpace = null;
@@ -493,6 +296,7 @@ class Game {
       this.player.y = this.dungeon.startY;
     }
     this.player.vx = this.player.vy = 0;
+    this.player.phoenixUsed = false;       // the Phoenix Feather: once per map
 
     // Each map hands out that map's weapon tier.
     const promoted = this.player.setWeaponTier(this.mapNumber, opts.fresh ? null : this);
@@ -520,6 +324,8 @@ class Game {
       document.getElementById(id).classList.add('hidden');
     }
     document.getElementById('hud').classList.remove('hidden');
+    document.getElementById('mapChip').classList.toggle('hard', this.hard);
+    document.getElementById('stage').classList.toggle('outdoor', !!def.outdoor);
     this.refreshClassHud();
 
     if (!opts.silent) {
@@ -560,6 +366,7 @@ class Game {
       baseSeed: this.baseSeed,
       slot: this.saveSlot,
       mapNumber: this.mapNumber,
+      hard: this.hard,
       player: this.player.serialize(),
       world: {
         usedProps,
@@ -586,6 +393,7 @@ class Game {
     this.mapSeeds = MAPS.map(m => (this.baseSeed ^ m.seedSalt) >>> 0);
     this.time = data.elapsed || 0;
     this.runStart = performance.now() - this.time * 1000;
+    this.hard = !!data.hard;
 
     const player = Player.restore(data.player);
     this.loadMap(data.mapNumber || Maps.FIRST, { player, keepPosition: true, silent: true });
@@ -857,8 +665,8 @@ class Game {
     const src = opts.source;
     if (src && !src.dead && !opts.projectile) src.onParried(this);
 
-    // Parrying a boss stops the world and opens the rhythm break.
-    if (src && !src.dead && src.def && src.def.boss) {
+    // Parrying a boss (or a miniboss) stops the world and opens the rhythm break.
+    if (src && !src.dead && src.def && (src.def.boss || src.def.big)) {
       this.startRhythm(src);
       return;
     }
@@ -866,7 +674,7 @@ class Game {
     /* Perfect Parry — a 1-in-20 execution. Bosses are never eligible: a
        lottery ending a set-piece fight would gut it. */
     // Nor is John Space mid-trial: the whole point is that you never hit him.
-    const executable = src && !src.dead && src.takeDamage && !src.def?.boss && !src.trial && !src.neutral;
+    const executable = src && !src.dead && src.takeDamage && !src.noExecute && !src.trial && !src.neutral;
     if (executable && U.randi(1, PARRY.perfectOdds + 1) === Seq.FIRST) {
       this.fx.text(p.x, p.y - 44, 'PERFECT PARRY', '#ffffff', 24);
       this.fx.text(src.x, src.y - 40, 'EXECUTED', '#8fd4ff', 18);
@@ -957,16 +765,18 @@ class Game {
     Save.updateMeta(m => {
       if (won) {
         m.wins++;
+        if (this.hard) m.hardWins = (m.hardWins || 0) + 1;
         if (m.bestTime === null || this.time < m.bestTime) m.bestTime = this.time;
       } else m.deaths++;
     });
 
     document.getElementById('endTitle').textContent = won ? 'The Deep Is Yours' : 'You Died';
     document.getElementById('endSub').textContent = won
-      ? `You went down with a ${Seq.get(p.cls.tiers, Seq.FIRST).weapon.toLowerCase()} and walked out of Sarapolis.`
+      ? `You went down with ${Seq.get(p.cls.tiers, Seq.FIRST).weapon.toLowerCase()} and walked out of ${Maps.byNumber(Maps.LAST).name}${this.hard ? ' — on HARD' : ''}.`
       : `${Maps.byNumber(this.mapNumber).name} keeps you. The ${p.weaponName.toLowerCase()} was not enough.`;
     document.getElementById('endStats').innerHTML = [
       ['Class', `${p.cls.className} (${p.weaponName})`],
+      ['Difficulty', this.hard ? 'HARD' : 'Normal'],
       ['Reached', Maps.byNumber(this.mapNumber).name],
       ['Level', `${p.level}`],
       ['Enemies slain', `${p.kills}`],
@@ -987,6 +797,7 @@ class Game {
       const p = this.player;
       document.getElementById('pauseStats').innerHTML = [
         ['Class', `${p.cls.className} — ${p.weaponName}`],
+        ['Difficulty', this.hard ? 'HARD' : 'Normal'],
         ['Level', `${p.level}`],
         ['Health', `${Math.ceil(p.hp)} / ${p.maxHp}`],
         ['Damage', `${Math.round(p.power * 100)}%`],
@@ -996,6 +807,7 @@ class Game {
         ['Boons', p.perksTaken.length ? p.perksTaken.map(id => PERKS.find(x => x.id === id).name).join(', ') : '—'],
         ['Seed', this.seedText],
       ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+      document.getElementById('musicBtn').textContent = `Music: ${this.audio.music.on ? 'On' : 'Off'}`;
       document.getElementById('pause').classList.remove('hidden');
     } else if (this.state === 'paused') {
       this.state = 'playing';
@@ -1018,7 +830,7 @@ class Game {
     this.pendingLevelUps++;
     this.fx.ring(this.player.x, this.player.y, 30, '#ffd479', 26);
     this.fx.text(this.player.x, this.player.y - 40, 'LEVEL UP', '#ffd479', 20);
-    this.audio.blip(880, 0.2, 0.14, 'triangle');
+    this.audio.levelUp();
   }
 
   openPerkChoice(source = 'level') {
@@ -1032,9 +844,9 @@ class Game {
 
     const list = document.getElementById('perkList');
     list.innerHTML = '';
-    for (const perk of rollPerks(p.classId, p.perksTaken)) {
+    for (const perk of rollPerks(p.classId, p.perksTaken, 3, source)) {
       const btn = document.createElement('button');
-      btn.className = 'perk';
+      btn.className = 'perk' + (perk.shrine ? ' shrine-perk' : '');
       btn.innerHTML = `<div class="icon">${perk.icon}</div><h3>${perk.name}</h3><p>${perk.desc}</p>`;
       btn.onclick = () => this.takePerk(perk);
       list.appendChild(btn);
@@ -1180,7 +992,7 @@ class Game {
       this.fx.text(prop.x, prop.y - 24, `+${gold} gold`, '#e2b34a', 17);
       // Update 3.0: chests sometimes hold an accessory.
       if (U.chance(prop.rich ? 0.6 : 0.12)) {
-        const pool = ACCESSORIES.filter(a => !a.cursed && a.price < (prop.rich ? 900 : 400) * this.mapNumber);
+        const pool = ACCESSORIES.filter(a => !a.cursed && !a.unique && a.price < (prop.rich ? 900 : 400) * this.mapNumber);
         const item = U.pick(pool);
         p.bag.push(item.id);
         this.fx.text(prop.x, prop.y - 44, item.name, Gear.rarity(item).color, 15);
@@ -1193,7 +1005,8 @@ class Game {
 
     } else if (prop.type === 'fountain') {
       prop.used = true;
-      const healed = p.heal(Math.round(p.maxHp * 0.45));
+      // Hard mode: the water is thinner.
+      const healed = p.heal(Math.round(p.maxHp * (this.hard ? 0.3 : 0.45)));
       p.energy = p.maxEnergy;
       // Companions drink too — the reason to save a fountain rather than
       // sip it the moment you find one.
@@ -1211,6 +1024,7 @@ class Game {
 
     } else if (prop.type === 'shrine') {
       prop.used = true;
+      this.audio.shrine();
       this.openPerkChoice('shrine');
 
     } else if (prop.type === 'cage') {
@@ -1334,14 +1148,18 @@ class Game {
 
     const threat = prop.room.threat + 1;
     const a = U.rand(0, Math.PI * 2);
-    const spot = this.safeSpawnNear(prop.x, prop.y, 110, a,
-      ENEMY_TYPES[prop.minibossType].radius * 1.25 + 2);
-    const boss = this.spawnEnemy(prop.minibossType, spot.x, spot.y, threat, true);
+    const def = ENEMY_TYPES[prop.minibossType];
+    // Update 4.0: a genuine 50,000 HP miniboss rather than a swollen elite.
+    const big = !!def.big;
+    const spot = this.safeSpawnNear(prop.x, prop.y, 130, a, def.radius * (big ? 1 : 1.25) + 2);
+    const boss = this.spawnEnemy(prop.minibossType, spot.x, spot.y, threat, !big);
     boss.aggro = true;
-    boss.maxHp = Math.round(boss.maxHp * 1.8);
-    boss.hp = boss.maxHp;
+    if (!big) {
+      boss.maxHp = Math.round(boss.maxHp * 1.8);
+      boss.hp = boss.maxHp;
+    }
     boss.corruptGuard = prop;
-    boss.titleName = 'Corrupted ' + boss.def.name;
+    boss.titleName = def.name.startsWith('Corrupted') ? def.name : 'Corrupted ' + def.name;
     prop.guard = boss;
 
     this.fx.ring(prop.x, prop.y, 70, '#b05cff', 44);
@@ -1359,7 +1177,7 @@ class Game {
       prop.active = false;
       prop.used = true;
       const p = this.player;
-      const gold = Math.round(U.randi(90, 190) * p.goldMul);
+      const gold = Math.round(U.randi(600, 1200) * p.goldMul);
       p.gold += gold;
       this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
       this.pickups.push(new Pickup('shard', prop.x, prop.y, 1));
@@ -1464,7 +1282,10 @@ class Game {
     this.boss = this.spawnEnemy(def.bossType, room.wx, room.wy - 40, room.threat, false);
     // Boss health is set per map rather than inherited from tier scaling, so
     // it stays tuned as maps are added or reordered.
-    if (def.bossHp) { this.boss.maxHp = def.bossHp; this.boss.hp = def.bossHp; }
+    if (def.bossHp) {
+      const hp = Math.round(def.bossHp * (this.hard ? 1.5 : 1));
+      this.boss.maxHp = hp; this.boss.hp = hp;
+    }
     this.boss.aggro = true;
     this.audio.blip(70, 0.7, 0.2, 'sawtooth');
     this.startCinematic(this.boss);
@@ -1484,6 +1305,7 @@ class Game {
     for (const k of ['left', 'right', 'up', 'down']) this.input[k] = 0;
     this.fx.addShake(12);
     this.audio.blip(55, 1.2, 0.2, 'sawtooth');
+    this.audio.roar();
   }
 
   skipCinematic() {
@@ -1657,9 +1479,72 @@ class Game {
       e.dmgScale *= diff.dmg;
       e.shotMul = diff.dmg;
     }
+    // Minibosses are fixed at 50,000 HP; how hard they hit grows by stage.
+    if (e.def.big) e.dmgScale = [0.55, 0.8, 1.1][U.clamp(this.mapNumber - 1, 0, 2)];
+    /* Hard mode: everything has more health, hits harder, attacks faster
+       and moves a little quicker. (Boss health is raised where it is set.) */
+    if (this.hard) {
+      if (!e.def.boss) { e.maxHp = Math.round(e.maxHp * 1.6); e.hp = e.maxHp; }
+      e.dmgScale *= 1.5;
+      if (!e.def.noScale) e.shotMul = (e.shotMul || 1) * 1.5;
+      e.tempo *= 1.15;
+      e.speed *= 1.1;
+    }
     if (room) room.alive = (room.alive || 0) + 1;
     this.enemies.push(e);
     return e;
+  }
+
+  /* A miniboss down: the toast, the record, and — for the war machines —
+     the unique accessory nobody sells. */
+  onMinibossDefeated(e) {
+    const name = e.titleName || e.def.name;
+    this.toast(`${name} is down.`, 4);
+    this.fx.addFlash('#ffffff', 0.4);
+    this.fx.text(e.x, e.y - e.radius - 40, `${name.toUpperCase()} DESTROYED`, '#ffd479', 20);
+    Save.updateMeta(m => {
+      m.minibossesFelled = m.minibossesFelled || [];
+      if (!m.minibossesFelled.includes(e.type)) m.minibossesFelled.push(e.type);
+    });
+    if (e.def.drops) this.grantUnique(e.def.drops);
+  }
+
+  grantUnique(id) {
+    const p = this.player;
+    const item = Gear.get(id);
+    if (!item) return;
+    const owned = p.bag.includes(id) || Object.values(p.equip).includes(id)
+      || this.companions.some(c => Object.values(c.equip).includes(id));
+    if (owned) {
+      p.gold += 1500;
+      this.toast(`You already carry the ${item.name}. It pays out instead: +1500.`, 4.5);
+      return;
+    }
+    p.bag.push(id);
+    this.toast(`UNIQUE: ${item.name} — ${item.desc} (I to equip)`, 6);
+    this.fx.text(p.x, p.y - 50, item.name, '#4fffd0', 18);
+    this.audio.shrine();
+  }
+
+  // Things that stick to you: Flowery's vines and Judgement's Prejudice.
+  hazardEffect(effect) {
+    const p = this.player;
+    if (p.dead) return;
+    if (effect === 'root') {
+      p.rootT = Math.max(p.rootT, 0.8);
+      this.fx.text(p.x, p.y - 44, 'ROOTED', '#8fd14a', 14);
+    } else if (effect === 'prejudice') {
+      p.prejudgedT = 5;
+      this.fx.text(p.x, p.y - 44, 'PREJUDGED', '#ff6b52', 16);
+      this.fx.addFlash('#c8452f', 0.25);
+    }
+  }
+
+  // A chain-lightning flash, drawn for a fraction of a second.
+  zap(x1, y1, x2, y2, color = '#ffe066') {
+    this.zaps.push({ x1, y1, x2, y2, color, t: 0.16 });
+    if (this.zaps.length > 30) this.zaps.shift();
+    this.audio.blip(1800, 0.05, 0.05, 'square');
   }
 
   collect(pk) {
@@ -1667,7 +1552,7 @@ class Game {
     if (pk.type === 'gold') {
       const g = Math.max(1, Math.round(pk.value * p.goldMul));
       p.gold += g;
-      this.audio.blip(940, 0.04, 0.05, 'triangle');
+      this.audio.coin();
     } else if (pk.type === 'heart') {
       const h = p.heal(pk.value);
       if (h > 0) this.fx.text(p.x, p.y - 30, `+${h}`, '#6fbf73', 15);
@@ -1853,6 +1738,7 @@ class Game {
   /* ---------------- update ---------------- */
 
   update(dt) {
+    this.updateMusic();
     if (this.state !== 'playing') { this.fx.update(dt); return; }
     this.updateRoulette(dt);
     this.updateTempest(dt);
@@ -1880,7 +1766,8 @@ class Game {
         const fb = Maps.byNumber(this.mapNumber).finalBoss;
         this.pendingFinal = null;
         this.boss = this.spawnEnemy(fb.type, pf.x, pf.y, pf.tier, false);
-        this.boss.maxHp = fb.hp; this.boss.hp = fb.hp;
+        const hp = Math.round(fb.hp * (this.hard ? 1.5 : 1));
+        this.boss.maxHp = hp; this.boss.hp = hp;
         this.boss.aggro = true;
         this.startCinematic(this.boss);
         return;
@@ -1921,7 +1808,16 @@ class Game {
       if (U.dist(this.player.x, this.player.y, room.wx, room.wy) < 820) {
         room.spawned = true;
         room.alive = 0;
-        for (const s of room.spawns) this.spawnEnemy(s.type, s.x, s.y, s.threat, s.elite, room);
+        for (const s of room.spawns) {
+          const t = ENEMY_TYPES[s.type];
+          // Hard mode: more of them, and more of them elite.
+          const elite = s.elite || (this.hard && !t.big && U.chance(0.12));
+          this.spawnEnemy(s.type, s.x, s.y, s.threat, elite, room);
+          if (this.hard && !t.big && U.chance(0.4)) {
+            const spot = this.safeSpawnNear(s.x, s.y, 40, U.rand(0, Math.PI * 2), t.radius + 2);
+            this.spawnEnemy(s.type, spot.x, spot.y, s.threat, false, room);
+          }
+        }
         if (room.alive === 0) room.cleared = true;
       }
     }
@@ -1969,6 +1865,32 @@ class Game {
       if (z.dead) this.zones.splice(i, 1);
     }
 
+    for (let i = this.beams.length - 1; i >= 0; i--) {
+      const b = this.beams[i];
+      b.update(dt, this);
+      if (b.dead) this.beams.splice(i, 1);
+    }
+    for (let i = this.zaps.length - 1; i >= 0; i--) {
+      this.zaps[i].t -= dt;
+      if (this.zaps[i].t <= 0) this.zaps.splice(i, 1);
+    }
+
+    // The nearest awake miniboss gets the big bar (and the music).
+    this.activeMiniboss = null;
+    let bestD = 950;
+    for (const e of this.enemies) {
+      if (e.dead || !e.def.big || !e.aggro) continue;
+      const dd = U.dist(e.x, e.y, this.player.x, this.player.y);
+      if (dd < bestD) { bestD = dd; this.activeMiniboss = e; }
+    }
+
+    // Low health: you can hear it.
+    const frac = this.player.hp / this.player.maxHp;
+    if (frac < 0.25 && !this.player.dead) {
+      this.heartT -= dt;
+      if (this.heartT <= 0) { this.heartT = 0.6 + frac * 2; this.audio.heartbeat(); }
+    }
+
     /* Delayed ground impacts: a marked circle, a beat of warning, then the
        blast. Mage meteors and enemy mortar shells are the same object — the
        only difference is which side it hurts. Enemy impacts are always
@@ -1981,14 +1903,27 @@ class Game {
 
       this.fx.ring(m.x, m.y, m.radius * 0.7, m.color, 40);
       this.fx.spark(m.x, m.y, {
-        count: 34, color: [m.color, '#ffd479', '#ffffff'], speedMax: 420, lifeMax: 0.8, sizeMax: 6,
+        count: m.style === 'vine' ? 18 : 34, color: [m.color, m.style === 'vine' ? '#2f5c1a' : '#ffd479', '#ffffff'],
+        speedMax: m.style === 'pillar' ? 260 : 420, lifeMax: 0.8, sizeMax: 6,
+        gravity: m.style === 'pillar' ? -500 : 0,
       });
-      this.fx.addShake(11);
-      this.audio.explode();
+      this.fx.addShake(m.style === 'vine' ? 5 : 11);
+      if (m.style === 'vine') this.audio.vine();
+      else if (m.style === 'pillar') this.audio.laser();
+      else if (m.style === 'hammer') { this.audio.gavel(); this.audio.explode(); }
+      else this.audio.explode();
 
       if (m.hostile) {
         if (U.dist(m.x, m.y, this.player.x, this.player.y) < m.radius) {
-          this.player.takeHit(m.aoeDamage, this, { x: m.x, y: m.y, kind: 'red', source: m.source });
+          const res = this.player.takeHit(m.aoeDamage, this, { x: m.x, y: m.y, kind: 'red', source: m.source });
+          if (res === 'hit' && m.effect) this.hazardEffect(m.effect);
+        }
+        // Gas grenades and the like leave the ground poisoned.
+        if (m.leaves) {
+          this.zones.push(new Zone('goo', m.x, m.y, {
+            radius: m.radius * 0.8, life: 5, tickEvery: 0.7, damage: 5 * (m.source ? m.source.dmgScale : 1),
+            power: 1, hostile: true, tint: 'spore',
+          }));
         }
         continue;
       }
@@ -2089,7 +2024,7 @@ class Game {
     text('xpText', `LV ${p.level} · ${p.weaponName.toUpperCase()} ${U.roman(p.weaponLevel)}`);
     text('goldText', String(p.gold));
     text('killText', String(p.kills));
-    text('mapText', Maps.byNumber(this.mapNumber).name);
+    text('mapText', Maps.byNumber(this.mapNumber).name + (this.hard ? ' · HARD' : ''));
     text('shrineText', `${this.shrinesDown}/${this.dungeon.redShrineCount}`);
     flag('shrineChip', 'done', this.shrinesDown >= this.dungeon.redShrineCount);
     text('regionText', this.currentRoom
@@ -2098,7 +2033,14 @@ class Game {
 
     const heavyCost = p.cls.heavy.cost * p.costMul * 0.35;
     const mobCost = p.cls.mobility.cost * p.mobCostMul;
-    flag('ab2', 'spent', p.energy < heavyCost);
+    if (p.cls.heavyCdKey) {
+      // A heavy on its own clock (the Ninja's smoke) shows the countdown.
+      const hcd = p.minionCds[p.cls.heavyCdKey] || 0;
+      text('ab2Name', hcd > 0 ? `${p.cls.heavy.name} ${Math.ceil(hcd)}s` : p.cls.heavy.name);
+      flag('ab2', 'spent', hcd > 0);
+    } else {
+      flag('ab2', 'spent', p.energy < heavyCost);
+    }
     flag('ab3', 'spent', p.energy < mobCost || p.mobCd > 0);
     flag('ab3', 'ready', p.energy >= mobCost && p.mobCd <= 0);
     flag('ab5', 'spent', p.parryCd > 0);
@@ -2207,6 +2149,8 @@ class Game {
     this.drawProps(ctx);
     for (const pk of this.pickups) pk.draw(ctx);
     this.drawImpactMarkers(ctx);
+    for (const b of this.beams) b.draw(ctx);
+    this.drawZaps(ctx);
     this.drawEnemies(ctx);
     for (const m of this.minions) m.draw(ctx);
     for (const c of this.companions) c.draw(ctx, this.time);
@@ -2224,8 +2168,29 @@ class Game {
     this.drawMinimap();
   }
 
+  drawZaps(ctx) {
+    if (!this.zaps.length) return;
+    ctx.save();
+    ctx.lineWidth = 2.5;
+    for (const z of this.zaps) {
+      ctx.globalAlpha = U.clamp(z.t / 0.16, 0, 1);
+      ctx.strokeStyle = z.color;
+      ctx.shadowBlur = 12; ctx.shadowColor = z.color;
+      ctx.beginPath();
+      ctx.moveTo(z.x1, z.y1);
+      for (let i = 1; i < 6; i++) {
+        const k = i / 6;
+        ctx.lineTo(U.lerp(z.x1, z.x2, k) + U.rand(-8, 8), U.lerp(z.y1, z.y2, k) + U.rand(-8, 8));
+      }
+      ctx.lineTo(z.x2, z.y2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   drawTiles(ctx) {
     const d = this.dungeon;
+    if (d.map.outdoor) { this.drawOutdoorTiles(ctx); return; }
     const x0 = Math.max(0, Math.floor(this.cam.x / TILE) - 1);
     const y0 = Math.max(0, Math.floor(this.cam.y / TILE) - 1);
     const x1 = Math.min(d.w - 1, Math.ceil((this.cam.x + this.vw) / TILE) + 1);
@@ -2323,6 +2288,132 @@ class Game {
         ctx.fillRect(px, py, TILE, TILE);
         ctx.fillStyle = `rgba(255,150,110,${pulse * 0.5})`;
         ctx.fillRect(px, py + ((this.time * 40) % TILE), TILE, 2);
+      }
+    }
+  }
+
+  /* Update 4.0: Day-ZEE is under open sky. Same grid, different reading:
+     walls are sandbag-and-concrete lines with a lit face, floors are
+     cracked asphalt and dirt, pillars are crates, and water is the oily
+     flood of the dry dock. */
+  drawOutdoorTiles(ctx) {
+    const d = this.dungeon;
+    const x0 = Math.max(0, Math.floor(this.cam.x / TILE) - 1);
+    const y0 = Math.max(0, Math.floor(this.cam.y / TILE) - 1);
+    const x1 = Math.min(d.w - 1, Math.ceil((this.cam.x + this.vw) / TILE) + 1);
+    const y1 = Math.min(d.h - 1, Math.ceil((this.cam.y + this.vh) / TILE) + 1);
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        const t = d.at(tx, ty);
+        const px = tx * TILE, py = ty * TILE;
+        const pal = d.palette(d.tierAt(tx, ty));
+        // tileNoise can come back negative; fold it into [0, 1) for the rarity checks.
+        const n0 = U.tileNoise(tx, ty), n = n0 < 0 ? n0 + 1 : n0;
+
+        if (t === T.WALL) {
+          const belowOpen = !SOLID[d.at(tx, ty + 1)] && d.at(tx, ty + 1) !== undefined;
+          ctx.fillStyle = pal.wall;
+          ctx.fillRect(px, py, TILE, TILE);
+          // Razor wire along the top of a perimeter wall, now and then.
+          if (n > 0.8 && !SOLID[d.at(tx, ty - 1)]) {
+            ctx.strokeStyle = 'rgba(200,200,190,.18)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let k = 0; k < 4; k++) ctx.arc(px + 5 + k * 8, py + 8, 4, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          if (belowOpen) {
+            // Sandbags stacked along the lit face.
+            const fy = py + TILE * 0.5;
+            ctx.fillStyle = pal.accent;
+            ctx.fillRect(px, fy, TILE, TILE * 0.5);
+            ctx.fillStyle = 'rgba(0,0,0,.28)';
+            const off = (tx % 2) * 8;
+            for (let row = 0; row < 2; row++) {
+              const ry = fy + row * (TILE * 0.25);
+              ctx.fillRect(px, ry + TILE * 0.25 - 2, TILE, 2);
+              for (let bx = -off + (row ? 8 : 0); bx < TILE; bx += 16) ctx.fillRect(px + Math.max(0, bx), ry, 2, TILE * 0.25);
+            }
+            ctx.fillStyle = 'rgba(255,255,255,.08)';
+            ctx.fillRect(px, fy, TILE, 2);
+          }
+          continue;
+        }
+
+        if (t === T.WATER) {
+          ctx.fillStyle = '#1f2b33';
+          ctx.fillRect(px, py, TILE, TILE);
+          const shimmer = Math.sin(this.time * 1.4 + tx * 0.6 + ty * 0.45) * 0.5 + 0.5;
+          ctx.fillStyle = `rgba(150,190,210,${0.04 + shimmer * 0.06})`;
+          ctx.fillRect(px, py, TILE, TILE);
+          if (n > 0.9) {
+            ctx.fillStyle = 'rgba(120,90,160,.12)';   // oil sheen
+            ctx.beginPath(); ctx.ellipse(px + TILE / 2, py + TILE / 2, 10, 4, n * 6, 0, Math.PI * 2); ctx.fill();
+          }
+          continue;
+        }
+
+        ctx.fillStyle = pal.floor;
+        ctx.fillRect(px, py, TILE, TILE);
+        // Asphalt grit.
+        ctx.fillStyle = n > 0.5 ? 'rgba(255,255,255,.025)' : 'rgba(0,0,0,.07)';
+        ctx.fillRect(px, py, TILE, TILE);
+        ctx.fillStyle = 'rgba(0,0,0,.12)';
+        ctx.fillRect(px + ((n * 97) % 30), py + ((n * 53) % 30), 2, 2);
+        ctx.fillRect(px + ((n * 31) % 30), py + ((n * 71) % 30), 2, 2);
+        if (n > 0.93) {
+          // A crack.
+          ctx.strokeStyle = 'rgba(0,0,0,.35)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(px + 4, py + 6 + n * 10);
+          ctx.lineTo(px + 14, py + 14);
+          ctx.lineTo(px + 22, py + 10 + n * 14);
+          ctx.lineTo(px + 30, py + 20);
+          ctx.stroke();
+        } else if (n > 0.6 && n < 0.625) {
+          ctx.fillStyle = 'rgba(10,10,12,.3)';       // oil stain
+          ctx.beginPath(); ctx.ellipse(px + 17, py + 17, 11, 6, n * 9, 0, Math.PI * 2); ctx.fill();
+        } else if (n < 0.03) {
+          ctx.fillStyle = 'rgba(110,20,20,.28)';     // somebody's bad day
+          ctx.beginPath(); ctx.ellipse(px + 15, py + 18, 8, 5, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        if (SOLID[d.at(tx, ty - 1)]) {
+          ctx.fillStyle = 'rgba(0,0,0,.30)';
+          ctx.fillRect(px, py, TILE, 4);
+          ctx.fillStyle = 'rgba(0,0,0,.14)';
+          ctx.fillRect(px, py + 4, TILE, 4);
+        }
+        if (t === T.RUBBLE) {
+          ctx.fillStyle = 'rgba(40,36,30,.6)';
+          ctx.fillRect(px + 6, py + 9, 7, 4);
+          ctx.fillRect(px + 18, py + 20, 5, 6);
+          ctx.fillStyle = 'rgba(160,150,130,.25)';
+          ctx.fillRect(px + 22, py + 8, 6, 2);
+        }
+        if (t === T.PILLAR) {
+          // A supply crate.
+          ctx.fillStyle = 'rgba(0,0,0,.35)';
+          ctx.fillRect(px + 4, py + 7, TILE - 6, TILE - 6);
+          ctx.fillStyle = '#6b5434';
+          ctx.fillRect(px + 2, py + 2, TILE - 6, TILE - 6);
+          ctx.strokeStyle = '#45351f';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(px + 3, py + 3, TILE - 8, TILE - 8);
+          ctx.beginPath();
+          ctx.moveTo(px + 3, py + 3); ctx.lineTo(px + TILE - 5, py + TILE - 5);
+          ctx.moveTo(px + TILE - 5, py + 3); ctx.lineTo(px + 3, py + TILE - 5);
+          ctx.stroke();
+        }
+      }
+    }
+    if (d.sealed) {
+      const pulse = 0.35 + Math.sin(this.time * 5) * 0.15;
+      for (const s of d.sealTiles) {
+        const px = s.tx * TILE, py = s.ty * TILE;
+        if (px < this.cam.x - TILE || px > this.cam.x + this.vw || py < this.cam.y - TILE || py > this.cam.y + this.vh) continue;
+        ctx.fillStyle = `rgba(200,69,47,${pulse})`;
+        ctx.fillRect(px, py, TILE, TILE);
       }
     }
   }
@@ -2551,6 +2642,20 @@ class Game {
       if (tor.x < this.cam.x - 40 || tor.x > this.cam.x + this.vw + 40 ||
           tor.y < this.cam.y - 40 || tor.y > this.cam.y + this.vh + 40) continue;
       const f = 0.7 + Math.sin(t * 8 + tor.phase) * 0.15 + Math.sin(t * 17.3 + tor.phase * 2) * 0.1;
+      if (this.dungeon.map.outdoor) {
+        // A floodlight on a pole. Some of them still work properly.
+        const flick = Math.sin(t * 23 + tor.phase * 7) > -0.92 ? 1 : 0.2;
+        ctx.save();
+        ctx.fillStyle = '#3a3a3e';
+        ctx.fillRect(tor.x - 1.5, tor.y - 10, 3, 14);
+        ctx.fillStyle = '#5a5a60';
+        ctx.fillRect(tor.x - 6, tor.y - 15, 12, 6);
+        ctx.shadowBlur = 24 * flick; ctx.shadowColor = '#e8f4ff';
+        ctx.fillStyle = `rgba(232,244,255,${0.9 * flick})`;
+        ctx.fillRect(tor.x - 5, tor.y - 10, 10, 2);
+        ctx.restore();
+        continue;
+      }
       ctx.save();
       ctx.shadowBlur = 22 * f;
       ctx.shadowColor = '#ffa94d';
@@ -2668,6 +2773,42 @@ class Game {
       ctx.globalAlpha = 0.14 + t * 0.3;
       ctx.fillStyle = m.color;
       ctx.beginPath(); ctx.arc(m.x, m.y, m.radius * t, 0, Math.PI * 2); ctx.fill();
+      if (m.style === 'pillar') {
+        // The column of light gathers above the spot before it falls.
+        ctx.globalAlpha = 0.1 + t * 0.5;
+        ctx.fillStyle = '#fff6d0';
+        ctx.shadowBlur = 20; ctx.shadowColor = m.color;
+        const w = m.radius * (0.2 + t * 0.6);
+        ctx.fillRect(m.x - w / 2, m.y - 420, w, 420);
+      } else if (m.style === 'vine') {
+        // Cracks opening in the floor.
+        ctx.globalAlpha = 0.4 + t * 0.5;
+        ctx.strokeStyle = '#2f5c1a';
+        ctx.lineWidth = 2.5;
+        for (let k = 0; k < 5; k++) {
+          const a = k * 1.256 + m.x * 0.01;
+          ctx.beginPath();
+          ctx.moveTo(m.x, m.y);
+          ctx.lineTo(m.x + Math.cos(a) * m.radius * t, m.y + Math.sin(a) * m.radius * t * 0.7);
+          ctx.stroke();
+        }
+      } else if ((m.style === 'shell' || m.style === 'hammer') && m.hostile) {
+        // Something is coming down on this spot: watch its shadow grow.
+        const fall = (1 - t) * 260;
+        ctx.globalAlpha = 0.25 + t * 0.4;
+        ctx.fillStyle = 'rgba(0,0,0,.6)';
+        ctx.beginPath(); ctx.ellipse(m.x, m.y, 4 + t * 12, 2 + t * 5, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.9;
+        if (m.style === 'hammer') {
+          ctx.fillStyle = '#6b5a48';
+          ctx.fillRect(m.x - 2, m.y - fall - 22, 4, 22);
+          ctx.fillStyle = m.color;
+          ctx.fillRect(m.x - 10, m.y - fall - 30, 20, 11);
+        } else {
+          ctx.fillStyle = '#2a2a2e';
+          ctx.beginPath(); ctx.ellipse(m.x, m.y - fall, 5, 8, 0, 0, Math.PI * 2); ctx.fill();
+        }
+      }
       ctx.restore();
     }
   }
@@ -2721,6 +2862,23 @@ class Game {
         ctx.beginPath(); ctx.arc(x, y, e.radius * 1.25, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
       }
+      // Update 4.0 statuses wear their colour.
+      const tint = e.burnT > 0 ? '#ff8a3c' : e.poisonT > 0 ? '#8fd14a' : e.bleedT > 0 ? '#ff5a5a' : null;
+      if (tint) {
+        ctx.globalAlpha = 0.18 + Math.sin(this.time * 9) * 0.06;
+        ctx.fillStyle = tint;
+        ctx.beginPath(); ctx.arc(x, y, e.radius * 1.15, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      if (e.hexT > 0) {
+        ctx.globalAlpha = 0.55;
+        ctx.strokeStyle = '#c07bff';
+        ctx.setLineDash([4, 5]);
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, e.radius * 1.4, this.time, this.time + Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
 
       const body = e.flash > 0 ? '#ffffff' : e.def.color;
       ctx.fillStyle = body;
@@ -2746,8 +2904,20 @@ class Game {
 
       ctx.restore();
 
-      // health bar for elites & wounded enemies
-      if ((e.elite || e.hp < e.maxHp) && !e.def.boss) {
+      // Dizzy: little stars round the head.
+      if (e.dizzy > 0) {
+        ctx.save();
+        ctx.fillStyle = '#ffe066';
+        for (let k = 0; k < 3; k++) {
+          const a = this.time * 6 + k * 2.09;
+          ctx.globalAlpha = 0.9;
+          ctx.fillRect(x + Math.cos(a) * e.radius * 0.8 - 2, y - e.radius - 8 + Math.sin(a) * 4 - 2, 4, 4);
+        }
+        ctx.restore();
+      }
+
+      // health bar for elites & wounded enemies (minibosses get the big bar)
+      if ((e.elite || e.hp < e.maxHp) && !e.isHeavyweight) {
         const w = e.radius * 2.2;
         ctx.fillStyle = 'rgba(0,0,0,.65)';
         ctx.fillRect(x - w / 2, y - e.radius - 13, w, 4);
@@ -2810,6 +2980,8 @@ class Game {
   /* The three Update 2.0 bosses get real silhouettes rather than the shared
      blocky one — a corona, a bloom, and a pair of fists. */
   drawBossForm(ctx, e, x, y, body) {
+    // Bosses drawn by art.js (Colonel Zee) go through the shared dispatcher.
+    if (Art.enemy[e.type]) { Art.drawEnemy(ctx, e, x, y, this.time, body); return; }
     const r = e.radius;
     const t = this.time;
     ctx.save();
@@ -2851,13 +3023,27 @@ class Game {
       ctx.beginPath(); ctx.arc(x - r * 0.1, y - r * 0.1, r * 0.13, 0, Math.PI * 2); ctx.fill();
 
     } else {
-      // Judgement: a torso and two oversized fists that wind with the attack.
+      // Judgement: a torso and two oversized fists that wind with the attack —
+      // and since Update 4.0, a gavel-hammer in the right one. Judgement 2.0
+      // wears a burning halo and gold.
+      const v2 = e.def.palette === 'verdict';
       const swing = e.atk || e.state === 'chargeWind' || e.state === 'charging' ? 1 : 0;
       const reach = r * (0.95 + swing * 0.5);
+      if (v2) {
+        ctx.globalAlpha = 0.6 + Math.sin(t * 5) * 0.2;
+        ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 3;
+        ctx.shadowBlur = 18; ctx.shadowColor = '#ffb347';
+        ctx.beginPath(); ctx.ellipse(x, y - r * 1.62, r * 0.55, r * 0.16, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+      }
       ctx.fillStyle = body;
       ctx.fillRect(x - r * 0.5, y - r * 0.95, r, r * 1.9);
       ctx.beginPath(); ctx.arc(x, y - r * 1.1, r * 0.42, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#cfc7b8';
+      if (v2) {
+        ctx.fillStyle = '#c8452f';
+        ctx.fillRect(x - r * 0.3, y - r * 1.16, r * 0.6, r * 0.1);   // a red blindfold
+      }
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : v2 ? '#ffe6a8' : '#cfc7b8';
       for (const side of [-1, 1]) {
         const fx2 = x + side * reach, fy2 = y + Math.sin(t * 4 + side) * 3;
         ctx.beginPath(); ctx.arc(fx2, fy2, r * 0.52, 0, Math.PI * 2); ctx.fill();
@@ -2865,6 +3051,16 @@ class Game {
         ctx.beginPath(); ctx.moveTo(x + side * r * 0.45, y - r * 0.2);
         ctx.lineTo(fx2, fy2); ctx.stroke();
       }
+      // The hammer, raised high on the wind-up and brought down on the blow.
+      const lift = e.atk ? (e.atk.phase === 'wind' ? -1.2 : 0.6) : -0.4;
+      ctx.save();
+      ctx.translate(x + reach, y);
+      ctx.rotate(lift);
+      ctx.fillStyle = '#6b5a48';
+      ctx.fillRect(-3, -r * 1.3, 6, r * 1.3);
+      ctx.fillStyle = v2 ? '#ffd479' : '#e8e2d4';
+      ctx.fillRect(-r * 0.42, -r * 1.55, r * 0.84, r * 0.42);
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -2876,7 +3072,7 @@ class Game {
     const heavy = kind === 'heavy';
     // Against a boss (or John's trial) a blue cannot be parried, so it is
     // drawn pale rather than in the parry blue.
-    const lightOnly = kind === 'blue' && (e.def.boss || e.trial);
+    const lightOnly = kind === 'blue' && (e.def.boss || e.def.big || e.trial);
     const col = heavy ? '#ffd479' : red ? '#ff5a3c' : lightOnly ? '#b9c3d6' : '#8fd4ff';
     const r = e.radius;
 
@@ -2896,6 +3092,18 @@ class Game {
       ctx.lineWidth = 2;
       ctx.strokeRect(0, -r * 1.1, len, r * 2.2);
       ctx.setLineDash([]);
+      ctx.restore();
+    }
+    // A sniper's laser sight: the line it is going to fire down.
+    if (atk && atk.def.laser) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(atk.angle);
+      ctx.globalAlpha = 0.25 + progress * 0.65;
+      ctx.strokeStyle = '#ff3b1f';
+      ctx.lineWidth = 1 + progress * 1.6;
+      ctx.shadowBlur = 8; ctx.shadowColor = '#ff3b1f';
+      ctx.beginPath(); ctx.moveTo(r, 0); ctx.lineTo(atk.def.range, 0); ctx.stroke();
       ctx.restore();
     }
     // Closing ring
@@ -2989,6 +3197,8 @@ class Game {
 
     // Body — per-class silhouette with a walk cycle, from js/art.js.
     if (p.iframes > 0 && Math.floor(this.time * 24) % 2 === 0) ctx.globalAlpha = 0.45;
+    // Unseen: a faint shimmer in the air where the Ninja is.
+    if (p.hidden) ctx.globalAlpha = 0.28 + Math.sin(this.time * 5) * 0.06;
     Art.player.draw(ctx, p, x, y, this.time);
 
     // Weapon in hand
@@ -3014,32 +3224,40 @@ class Game {
       ctx.restore();
     }
 
-    // Ricochet roll: the timing ring. Green = press M1 now, yellow = missed,
-    // and it flashes blue on a perfect bounce.
+    // Ricochet roll (Update 4.0): the bounce bar under you. Mash M1 to fill
+    // it; full is green and means the next wall or enemy bounces you.
     if (p.roll) {
       const r = p.roll;
-      const col = r.flash > 0 ? '#4fa8ff' : r.missed ? '#ffd479' : r.queued ? '#8fffb0'
-        : r.window ? '#3dff7a' : 'rgba(143,168,200,.55)';
+      const col = r.flash > 0 ? '#4fa8ff' : r.charged ? '#3dff7a' : 'rgba(143,168,200,.55)';
       ctx.save();
       ctx.strokeStyle = col;
-      ctx.lineWidth = r.window || r.flash > 0 ? 4 : 2;
-      ctx.shadowBlur = r.window || r.flash > 0 ? 16 : 0;
+      ctx.lineWidth = r.charged || r.flash > 0 ? 4 : 2;
+      ctx.shadowBlur = r.charged || r.flash > 0 ? 16 : 0;
       ctx.shadowColor = col;
       ctx.beginPath(); ctx.arc(x, y, 24 + (r.flash > 0 ? (0.3 - r.flash) * 60 : 0), 0, Math.PI * 2); ctx.stroke();
-      // Arrow showing the roll direction.
       ctx.fillStyle = col;
       ctx.translate(x + Math.cos(r.dir) * 34, y + Math.sin(r.dir) * 34);
       ctx.rotate(r.dir);
       ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-5, -6); ctx.lineTo(-5, 6); ctx.closePath(); ctx.fill();
       ctx.restore();
-      if (r.window && !r.queued && !r.missed) {
-        ctx.save();
-        ctx.fillStyle = '#3dff7a';
-        ctx.font = '800 12px system-ui';
-        ctx.textAlign = 'center';
-        ctx.fillText('M1!', x, y - 34);
-        ctx.restore();
-      }
+
+      const bw = 52, bh = 7, bx = x - bw / 2, by = y + 26;
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,.7)';
+      ctx.fillRect(bx - 2, by - 2, bw + 4, bh + 4);
+      ctx.fillStyle = r.charged ? '#3dff7a' : r.meter > 0.66 ? '#c8f06a' : '#ffd479';
+      if (r.charged) { ctx.shadowBlur = 12; ctx.shadowColor = '#3dff7a'; }
+      ctx.fillRect(bx, by, bw * r.meter, bh);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(255,255,255,.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 2, by - 2, bw + 4, bh + 4);
+      ctx.font = '800 10px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = r.charged ? '#3dff7a' : '#ffffff';
+      const tap = this.touch && this.touch.active ? 'TAP' : 'MASH M1';
+      ctx.fillText(r.charged ? 'BOUNCE READY' : tap, x, by + bh + 12);
+      ctx.restore();
     }
 
     // Double Sword slice: a bright streak along the cut.
@@ -3105,7 +3323,9 @@ class Game {
     const W = this.light.width, H = this.light.height;
     l.setTransform(1, 0, 0, 1, 0, 0);
     l.globalCompositeOperation = 'source-over';
-    l.fillStyle = 'rgba(4,4,8,0.90)';
+    // Day-ZEE is under the sky: a grey dusk instead of the dark of the deep.
+    const outdoor = !!this.dungeon.map.outdoor;
+    l.fillStyle = outdoor ? 'rgba(12,14,20,0.52)' : 'rgba(4,4,8,0.90)';
     l.clearRect(0, 0, W, H);
     l.fillRect(0, 0, W, H);
 
@@ -3127,8 +3347,9 @@ class Game {
     cut(this.player.x, this.player.y, 470 * flick, 1);
     for (const tor of this.dungeon.torches) {
       const f = 0.85 + Math.sin(this.time * 7 + tor.phase) * 0.1;
-      cut(tor.x, tor.y, 230 * f, 0.92);
+      cut(tor.x, tor.y, (outdoor ? 330 : 230) * f, 0.92);
     }
+    for (const b of this.beams) cut(b.x + Math.cos(b.angle) * b.len / 2, b.y + Math.sin(b.angle) * b.len / 2, b.len * 0.8, 0.35);
     for (const prop of this.dungeon.props) {
       if (prop.used && prop.type !== 'gate') continue;
       cut(prop.x, prop.y, prop.type === 'gate' ? 300 : 150, 0.8);
@@ -3150,8 +3371,8 @@ class Game {
 
     // Warm ambient tint over everything
     ctx.globalCompositeOperation = 'overlay';
-    ctx.globalAlpha = 0.08;
-    ctx.fillStyle = '#ffb27a';
+    ctx.globalAlpha = outdoor ? 0.12 : 0.08;
+    ctx.fillStyle = outdoor ? '#8fa6c0' : '#ffb27a';
     ctx.fillRect(0, 0, this.vw, this.vh);
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
@@ -3189,10 +3410,26 @@ class Game {
       ctx.globalAlpha = 1;
     }
 
+    // Ash drifting across the sky over Day-ZEE.
+    if (this.dungeon.map.outdoor) {
+      ctx.save();
+      ctx.fillStyle = '#c8c8c8';
+      for (let i = 0; i < 40; i++) {
+        const sp = 18 + (i % 5) * 9;
+        const ax = (i * 173.3 + this.time * sp * 0.6 - this.cam.x * 0.15) % this.vw;
+        const ay = (i * 97.7 + this.time * sp - this.cam.y * 0.15) % this.vh;
+        ctx.globalAlpha = 0.12 + (i % 4) * 0.05;
+        ctx.fillRect((ax + this.vw) % this.vw, (ay + this.vh) % this.vh, 2, 2);
+      }
+      ctx.restore();
+    }
+
     /* Dedicated boss bar. Every boss gets one, named and titled, with a
-       lagging "damage taken" ghost behind the fill so big hits read. */
-    if (this.boss && !this.boss.dead && !this.cinematic) {
-      const b = this.boss;
+       lagging "damage taken" ghost behind the fill so big hits read.
+       Update 4.0: an awake miniboss gets the same bar when no boss is up. */
+    const barTarget = this.boss && !this.boss.dead ? this.boss : this.activeMiniboss;
+    if (barTarget && !this.cinematic) {
+      const b = barTarget;
       const w = Math.min(620, this.vw * 0.58), h = 17;
       const x = (this.vw - w) / 2, y = this.vh - 78;
       const frac = U.clamp(b.hp / b.maxHp, 0, 1);
@@ -3204,7 +3441,10 @@ class Game {
       ctx.fillRect(x, y, w * b.barGhost, h);
       const col = b.def.palette === 'sun' ? '#ffc24d'
         : b.def.palette === 'flora' ? '#7fd66a'
-        : b.def.palette === 'fist' ? '#e8e2d4' : '#c8452f';
+        : b.def.palette === 'fist' ? '#e8e2d4'
+        : b.def.palette === 'verdict' ? '#ffd479'
+        : b.def.palette === 'colonel' ? '#a8b86a'
+        : b.def.big ? '#ff8a5c' : '#c8452f';
       ctx.fillStyle = col;
       ctx.fillRect(x, y, w * frac, h);
       ctx.strokeStyle = 'rgba(226,179,74,.55)';
@@ -3219,16 +3459,17 @@ class Game {
       ctx.font = '600 13px system-ui';
       ctx.textAlign = 'center';
       const title = b.def.title ? ` — ${b.def.title.toUpperCase()}` : '';
-      ctx.fillText(`${b.def.name.toUpperCase()}${title}`, this.vw / 2, y - 16);
+      ctx.fillText(`${(b.titleName || b.def.name).toUpperCase()}${title}`, this.vw / 2, y - 16);
       ctx.font = '600 10px system-ui';
       ctx.fillStyle = 'rgba(240,230,210,.6)';
-      ctx.fillText(`PHASE ${b.phase}  ·  ${Math.ceil(b.hp)} / ${b.maxHp}`, this.vw / 2, y - 4);
+      ctx.fillText(`${b.def.big ? 'MINIBOSS  ·  ' : ''}PHASE ${b.phase}  ·  ${Math.ceil(b.hp).toLocaleString()} / ${b.maxHp.toLocaleString()}`, this.vw / 2, y - 4);
     }
 
     /* John Space carries a bar whether he is neutral or hostile — it is how
        you know he is not just another wanderer. */
+    // Update 4.0: his bar only shows when you are near him (or fighting him).
     const j = this.johnSpace;
-    if (j && !j.dead) {
+    if (j && !j.dead && (j.trial || U.dist(j.x, j.y, this.player.x, this.player.y) < 560)) {
       const w = Math.min(420, this.vw * 0.4), h = 12;
       const x = (this.vw - w) / 2, y = 132;   // clear of the HUD chips and the toast
       const frac = U.clamp(j.hp / j.maxHp, 0, 1);
@@ -3349,6 +3590,14 @@ class Game {
     if (p.hpCap) tags.push([`HEALTH HELD 65% · ${p.hpCap.t.toFixed(1)}s`, '#c4e86b']);
     if (p.manaLockT > 0) tags.push([`MANA DRAINED · ${p.manaLockT.toFixed(1)}s`, '#7b8cff']);
     if (p.dashLockT > 0) tags.push([`DASH LOCKED · ${p.dashLockT.toFixed(1)}s`, '#ffe6b0']);
+    if (p.rootT > 0) tags.push([`ROOTED · ${p.rootT.toFixed(1)}s`, '#8fd14a']);
+    if (p.prejudgedT > 0) tags.push([`PREJUDGED — +30% DAMAGE · ${p.prejudgedT.toFixed(1)}s`, '#ff6b52']);
+    if (p.energyDebt) tags.push([`STAMINA -${Math.round(p.energyDebt.amount)} · ${p.energyDebt.t.toFixed(1)}s`, '#ffd479']);
+    if (p.ward > 0) tags.push(['MIRROR WARD', '#cfe8ff']);
+    if (p.cls.ambush && p.slotDef && p.slotDef.id === 'ambush') {
+      tags.push(p.hidden ? ['UNSEEN — NEXT HIT IS AN AMBUSH', '#b8a8ff']
+        : [`SEEN · HIDING IN ${Math.max(0, p.cls.ambush.rehide * p.rehideMul - p.hideT).toFixed(1)}s`, '#8f86b0']);
+    }
     if (!tags.length) return;
     ctx.save();
     ctx.font = '700 10px system-ui';
@@ -3431,7 +3680,7 @@ class Game {
     const d = this.dungeon, px = this.explorePx;
     const t = d.at(tx, ty);
     if (t === T.WALL) return;
-    this.exploreCtx.fillStyle = t === T.WATER ? '#26505f' : d.palette(d.tierAt(tx, ty)).accent;
+    this.exploreCtx.fillStyle = t === T.WATER ? (d.map.outdoor ? '#2e4250' : '#26505f') : d.palette(d.tierAt(tx, ty)).accent;
     this.exploreCtx.fillRect(tx * px, ty * px, px, px);
   }
 
@@ -3471,9 +3720,10 @@ class Game {
     for (const e of this.enemies) {
       if (U.dist(e.x, e.y, this.player.x, this.player.y) > span / 2 * TILE) continue;
       c.fillStyle = e.def.boss ? '#ff3b1f'
+        : e.def.big ? '#ff8a5c'
         : (e.guardian && !e.guardian.used) ? '#ff3b1f'
         : e.elite ? '#ffb347' : 'rgba(225,85,60,.9)';
-      const s = e.def.boss ? 6 : (e.guardian && !e.guardian.used) ? 5 : 3;
+      const s = e.def.boss || e.def.big ? 6 : (e.guardian && !e.guardian.used) ? 5 : 3;
       c.fillRect((e.x / TILE - pcx + span / 2) * scale - s / 2, (e.y / TILE - pcy + span / 2) * scale - s / 2, s, s);
     }
 
