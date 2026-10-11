@@ -111,6 +111,30 @@ then visit `http://localhost:8123`.
 | `TAB` | World map |
 | `ESC` | Pause |
 
+### On a phone or tablet
+
+The game plays in a mobile browser, in **landscape** (hold it upright and it
+asks you to turn it). Touch controls appear the moment you touch the screen and
+disappear again as soon as you use a mouse or keyboard, so a touchscreen laptop
+can use either. On a desktop nothing changes.
+
+| | |
+|---|---|
+| Left half of the screen | Move — put your thumb down anywhere for a floating stick |
+| Right half of the screen | Aim stick — push it to attack that way. Without it, you auto-aim at the nearest enemy in sight |
+| **HEAVY** | Hold to charge, release to fire; drag while holding to aim it |
+| **DASH** · **PARRY** | As the keys. The parry window is 25% wider on touch |
+| **Ability** (shows your loadout icon) | Tap to cycle, hold and drag to pick from the wheel |
+| **USE** | Interact. The prompt at the bottom of the screen is tappable too |
+| Top right | Inventory · map · pause · fullscreen |
+| Rhythm break | Four arrow pads appear in place of W A S D |
+
+Tap anywhere to skip a boss intro. Starting a run goes fullscreen and locks
+landscape where the browser allows it (Android Chrome does; iPhone Safari has
+no fullscreen for pages, so add it to the home screen for the best fit). Small
+screens also render the world zoomed out a little, so you can still see
+attacks coming.
+
 ## The red shrines
 
 Five red shrines burn in every map, and the boss gate stays bound until all
@@ -374,6 +398,7 @@ js/npcs.js        companions (The Disgraced One, Switcher, John Space) and Follo
 js/summons.js     Necromancer minions and Mage ground effects
 js/weapons.js     the classes and the perk pools — the core design file
 js/entities.js    player, enemies, projectiles, pickups
+js/touch.js       touch controls for phones and tablets
 js/game.js        loop, camera, renderer, lighting, interaction, UI
 js/main.js        bootstrap
 ```

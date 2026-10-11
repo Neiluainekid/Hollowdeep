@@ -329,7 +329,9 @@ class Player {
 
   tryParry(game) {
     if (this.parryCd > 0 || this.parryT > 0 || this.dashT > 0) return;
-    this.parryT = PARRY.window * this.parryMul;
+    // A thumb on glass is less precise than a key: touch gets a 25% wider window.
+    const touchBonus = game.touch && game.touch.active ? 1.25 : 1;
+    this.parryT = PARRY.window * this.parryMul * touchBonus;
     this.parryCd = PARRY.cdWhiff + this.parryT;
     this.deflectPebbles(game);
     this.facing = this.aim;

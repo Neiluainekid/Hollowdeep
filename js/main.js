@@ -30,6 +30,7 @@
         selectedSlot = entry.slot;
         if (entry.data) {
           // Occupied slot: resume straight into it.
+          if (game.touch.active) game.touch.goFullscreen();
           game.resume(Save.readRun(entry.slot), entry.slot);
         } else {
           renderSlots();
@@ -53,6 +54,8 @@
       // Starting fresh in an occupied slot discards whatever was suspended there.
       if (Save.hasRun(selectedSlot)
         && !confirm(`Slot ${selectedSlot} holds a suspended run. Overwrite it?`)) return;
+      // On a phone, go fullscreen and landscape while we still hold a tap.
+      if (game.touch.active) game.touch.goFullscreen();
       game.start(card.dataset.class, document.getElementById('seedInput').value, selectedSlot);
     });
   });
@@ -71,6 +74,7 @@
     last = now;
     game.update(dt);
     if (game.state !== 'title') game.render();
+    game.touch.sync();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

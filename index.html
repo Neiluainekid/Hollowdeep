@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Hollowdeep — Open World Dungeon</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -152,6 +154,7 @@
   <!-- ============ INVENTORY ============ -->
   <div id="inventory" class="screen hidden">
     <div class="modal inv">
+      <button class="modal-close" id="invClose" title="Close">✕</button>
       <div class="inv-head">
         <button class="inv-arrow" id="invPrev" title="Previous (←)">‹</button>
         <div class="inv-title">
@@ -177,6 +180,7 @@
   <!-- ============ SHOP ============ -->
   <div id="shop" class="screen hidden">
     <div class="modal inv">
+      <button class="modal-close" id="shopClose" title="Close">✕</button>
       <h2>The Hollow Peddler</h2>
       <p class="sub">"Everything here was somebody's. Now it can be yours."</p>
       <div class="inv-coins">◈ Coins <b id="shopCoins">0</b></div>
@@ -200,6 +204,7 @@
       <h2>Paused</h2>
       <div class="statgrid" id="pauseStats"></div>
       <p class="sub">ESC to resume</p>
+      <button class="btn" id="resumeBtn">Resume</button>
       <button class="btn danger" id="quitBtn">Abandon run</button>
     </div>
   </div>
@@ -207,6 +212,7 @@
   <!-- ============ MAP ============ -->
   <div id="mapscreen" class="screen hidden">
     <div class="modal wide">
+      <button class="modal-close" id="mapClose" title="Close">✕</button>
       <h2>The Hollowdeep</h2>
       <canvas id="bigmap" width="760" height="560"></canvas>
       <p class="sub"><span class="ic you">●</span> you &nbsp;
@@ -244,6 +250,7 @@
 <script src="js/summons.js"></script>
 <script src="js/weapons.js"></script>
 <script src="js/entities.js"></script>
+<script src="js/touch.js"></script>
 <script src="js/game.js"></script>
 <script src="js/main.js"></script>
 </body>

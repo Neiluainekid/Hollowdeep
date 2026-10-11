@@ -253,6 +253,7 @@ class Game {
 
     this.bindEvents();
     this.resize();
+    this.touch = new TouchControls(this);
   }
 
   // One 128px radial falloff, drawn once and scaled at use time.
@@ -274,17 +275,26 @@ class Game {
 
   resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.vw = window.innerWidth;
-    this.vh = window.innerHeight;
-    this.canvas.width = Math.floor(this.vw * dpr);
-    this.canvas.height = Math.floor(this.vh * dpr);
+    const w = window.innerWidth, h = window.innerHeight;
+    /* Small screens render at a larger virtual resolution, scaled down, so a
+       phone in landscape still sees enough of the room to read attacks
+       coming. Everything below works in virtual units (vw/vh, mouse); only
+       `px` — the device-pixel scale — knows the difference. Desktop: 1. */
+    this.zoom = U.clamp(Math.min(h / 480, w / 900), 0.62, 1);
+    this.vw = w / this.zoom;
+    this.vh = h / this.zoom;
+    this.canvas.width = Math.floor(w * dpr);
+    this.canvas.height = Math.floor(h * dpr);
     this.dpr = dpr;
+    this.px = dpr * this.zoom;
     this.light.width = Math.floor(this.vw / 2);
     this.light.height = Math.floor(this.vh / 2);
   }
 
   bindEvents() {
     window.addEventListener('resize', () => this.resize());
+    // Some phones report the pre-rotation size on the first resize event.
+    window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 250));
 
     const keyMap = {
       KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down',
@@ -304,7 +314,7 @@ class Game {
       }
       // A boss intro can be skipped.
       if (this.cinematic && !e.repeat && ['KeyE', 'Space', 'Enter', 'Escape'].includes(e.code)) {
-        this.cinematic.t = Math.max(this.cinematic.t, this.cinematic.dur - 0.35);
+        this.skipCinematic();
         e.preventDefault();
         return;
       }
@@ -333,8 +343,8 @@ class Game {
 
     this.canvas.addEventListener('mousemove', (e) => {
       const r = this.canvas.getBoundingClientRect();
-      this.mouse.x = e.clientX - r.left;
-      this.mouse.y = e.clientY - r.top;
+      this.mouse.x = (e.clientX - r.left) / this.zoom;
+      this.mouse.y = (e.clientY - r.top) / this.zoom;
     });
     this.canvas.addEventListener('mousedown', (e) => {
       this.audio.resume();
@@ -353,6 +363,11 @@ class Game {
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     document.getElementById('quitBtn').onclick = () => location.reload();
+    // Close buttons, for screens that otherwise only answered to a key.
+    document.getElementById('resumeBtn').onclick = () => this.togglePause();
+    document.getElementById('mapClose').onclick = () => this.toggleMap();
+    document.getElementById('invClose').onclick = () => this.closeMenus();
+    document.getElementById('shopClose').onclick = () => this.closeMenus();
     document.getElementById('invPrev').onclick = () => this.cycleInventory(-1);
     document.getElementById('invNext').onclick = () => this.cycleInventory(1);
     document.getElementById('againBtn').onclick = () => location.reload();
@@ -1420,6 +1435,10 @@ class Game {
     this.audio.blip(55, 1.2, 0.2, 'sawtooth');
   }
 
+  skipCinematic() {
+    if (this.cinematic) this.cinematic.t = Math.max(this.cinematic.t, this.cinematic.dur - 0.35);
+  }
+
   updateCinematic(dt) {
     const c = this.cinematic;
     c.t += dt;
@@ -1834,6 +1853,9 @@ class Game {
     if (this.roulette.open) dt *= 0.25;
     this.time += dt;
 
+    // Touch sticks write the same input/mouse the keyboard and mouse do.
+    if (this.touch) this.touch.update();
+
     // Screen -> world for aiming.
     this.mouseWorld.x = this.mouse.x + this.cam.x;
     this.mouseWorld.y = this.mouse.y + this.cam.y;
@@ -2057,8 +2079,9 @@ class Game {
     const key = john ? 'john' : prop ? prop.type + (prop.rich ? '+' : '') + this.shrinesDown : '';
     if (cache.prompt !== key) {
       cache.prompt = key;
+      const btn = this.touch && this.touch.active ? 'TAP' : 'E';
       if (john) {
-        promptEl.innerHTML = '<b>E</b> — provoke <b>John Space</b> (survive 2:00 without hitting back)';
+        promptEl.innerHTML = `<b>${btn}</b> — provoke <b>John Space</b> (survive 2:00 without hitting back)`;
         promptEl.classList.remove('hidden');
       } else if (prop) {
         // Built lazily: an eager object literal would evaluate every branch,
@@ -2082,7 +2105,7 @@ class Game {
           default: return `use the <b>${prop.type}</b>`;
         }
       })();
-      promptEl.innerHTML = `<b>E</b> — ${label}`;
+      promptEl.innerHTML = `<b>${btn}</b> — ${label}`;
         promptEl.classList.remove('hidden');
       } else {
         promptEl.classList.add('hidden');
@@ -2119,7 +2142,7 @@ class Game {
 
   renderFrame() {
     const ctx = this.ctx;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.setTransform(this.px, 0, 0, this.px, 0, 0);
     ctx.clearRect(0, 0, this.vw, this.vh);
     ctx.fillStyle = '#08080b';
     ctx.fillRect(0, 0, this.vw, this.vh);
@@ -3070,7 +3093,7 @@ class Game {
 
     const ctx = this.ctx;
     ctx.save();
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.setTransform(this.px, 0, 0, this.px, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(this.light, 0, 0, this.vw, this.vh);
 
@@ -3094,7 +3117,7 @@ class Game {
 
   drawOverlays(ctx) {
     ctx.save();
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.setTransform(this.px, 0, 0, this.px, 0, 0);
 
     if (this.fx.flash > 0) {
       ctx.globalAlpha = Math.min(0.6, this.fx.flash);
