@@ -9,21 +9,60 @@ class Audio2 {
     this.enabled = true;
     this.music = new Music(this);
     this._last = {};          // per-sound timestamps, for rate limiting
+    this.unlocked = false;
+    this.bindUnlock();
+  }
+
+  /* Browsers keep web audio silent until a user gesture, and phones are
+     strict about it: the context has to be created or resumed inside a tap,
+     and older iOS also wants a sound actually started in that tap. Every
+     gesture below keeps doing this (not just the first), because iOS
+     "interrupts" audio again whenever the screen locks, the app is switched
+     away from, or a call or notification comes in. */
+  bindUnlock() {
+    const kick = () => this.resume();
+    for (const t of ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown']) {
+      window.addEventListener(t, kick, { capture: true, passive: true });
+    }
+    // Coming back to the tab or app: try again (a tap will finish the job
+    // if the browser insists on one).
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && this.ctx) this.resume(false); });
+    window.addEventListener('pageshow', () => { if (this.ctx) this.resume(false); });
   }
 
   /* Update 4.0: everything routes through two buses — effects and music —
      so the music can be faded and muted without touching a single effect. */
-  resume() {
+  resume(fromGesture = true) {
     if (!this.ctx) {
+      if (!fromGesture) return;
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) {
-        this.ctx = new AC();
-        this.sfxBus = this.ctx.createGain();
-        this.sfxBus.connect(this.bus());
-        this.music.attach(this.ctx);
-      }
+      if (!AC) return;
+      // iPhone: play through the ring/silent switch, like a game should.
+      // Without this, Safari treats web audio as ambient and the switch
+      // mutes the whole game. Safari 16.4+; elsewhere it is simply absent.
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* ignore */ }
+      this.ctx = new AC();
+      this.sfxBus = this.ctx.createGain();
+      this.sfxBus.connect(this.ctx.destination);
+      this.music.attach(this.ctx);
     }
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    // 'interrupted' is iOS's own paused state (screen lock, calls); treat it
+    // like 'suspended' — anything but running gets resumed.
+    if (this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
+      const p = this.ctx.resume();
+      if (p && p.catch) p.catch(() => {});
+    }
+    if (!this.unlocked && fromGesture) {
+      // One silent sample, started inside the gesture: the old-iOS unlock.
+      try {
+        const b = this.ctx.createBuffer(1, 1, 22050);
+        const s = this.ctx.createBufferSource();
+        s.buffer = b;
+        s.connect(this.ctx.destination);
+        s.start(0);
+        this.unlocked = true;
+      } catch { /* try again on the next gesture */ }
+    }
   }
 
   bus() { return this.sfxBus || this.ctx.destination; }
