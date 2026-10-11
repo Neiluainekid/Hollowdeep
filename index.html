@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hollowdeep">
+<meta name="theme-color" content="#07070a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<title>Hollowdeep — Open World Dungeon</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="game"></canvas>
+
+  <!-- ============ HUD ============ -->
+  <div id="hud" class="hidden">
+    <div class="hud-left">
+      <div class="portrait" id="portrait"><span id="portraitIcon">⚔</span></div>
+      <div class="bars">
+        <div class="bar hp"><div class="fill" id="hpFill"></div><span class="label" id="hpText">100 / 100</span></div>
+        <div class="bar en"><div class="fill" id="enFill"></div><span class="label" id="enText">Stamina</span></div>
+        <div class="bar mana hidden" id="manaBar"><div class="fill" id="manaFill"></div><span class="label" id="manaText">Mana</span></div>
+        <div class="bar xp"><div class="fill" id="xpFill"></div><span class="label" id="xpText">Lv 1</span></div>
+      </div>
+    </div>
+
+    <div class="hud-top">
+      <div class="chip" id="goldChip">◈ <b id="goldText">0</b></div>
+      <div class="chip" id="mapChip"><b id="mapText">Tripolisis</b></div>
+      <div class="chip" id="shrineChip">Shrines: <b id="shrineText">0/5</b></div>
+      <div class="chip" id="depthChip">Region: <b id="regionText">Entry Halls</b></div>
+      <div class="chip" id="killChip">Slain: <b id="killText">0</b></div>
+    </div>
+
+    <div class="hud-right">
+      <canvas id="minimap" width="220" height="220"></canvas>
+      <div class="mm-caption" id="mmCaption">TAB — world map</div>
+    </div>
+
+    <div class="hud-bottom">
+      <div class="ability" id="ab1"><kbd>LMB</kbd><span id="ab1Name">Swing</span></div>
+      <div class="ability" id="ab2"><kbd>RMB</kbd><span id="ab2Name">Cleave</span></div>
+      <div class="ability" id="ab3"><kbd>SHIFT</kbd><span id="ab3Name">Dash</span></div>
+      <div class="ability parry" id="ab5"><kbd>SPACE</kbd><span>Parry</span></div>
+      <div class="ability slot hidden" id="ab6"><kbd>R</kbd><span id="slotIcon">☠</span><span id="slotName">Thrall</span></div>
+      <div class="ability" id="ab4"><kbd>E</kbd><span>Interact</span></div>
+      <div class="ability" id="ab7"><kbd>I</kbd><span>Inventory</span></div>
+    </div>
+
+    <div id="prompt" class="prompt hidden"></div>
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <!-- ============ TITLE / CLASS SELECT ============ -->
+  <div id="title" class="screen">
+    <div class="title-inner">
+      <h1>HOLLOWDEEP</h1>
+      <p class="tagline">Two dungeons sprawl beneath the world. You may carry <em>one</em> weapon down.<br>
+        What you choose is what you become.</p>
+
+      <div id="slotBox" class="slots">
+        <div class="slots-head">Save slots</div>
+        <div class="slot-row" id="slotRow"></div>
+        <div class="slot-hint" id="slotHint">Pick a slot, then choose a weapon.</div>
+      </div>
+
+      <div class="cards">
+        <button class="card" data-class="melee">
+          <div class="card-art art-sword"></div>
+          <h2>Wooden Sword</h2>
+          <div class="klass">→ MELEE</div>
+          <p>A splintered training blade. Close the distance, or die tired.</p>
+          <ul>
+            <li><b>140</b> Vitality — heavy armour of habit</li>
+            <li>Wide arcing swings that hit every foe in reach</li>
+            <li><b>R</b> swaps <b>Sword</b> and <b>Double Sword</b></li>
+            <li><b>Dash</b> with brief invulnerability</li>
+            <li>Heals on kill as you press forward</li>
+          </ul>
+          <span class="pick">Take the sword</span>
+        </button>
+
+        <button class="card" data-class="ranger">
+          <div class="card-art art-sling"></div>
+          <h2>Slingshot</h2>
+          <div class="klass">→ RANGER</div>
+          <p>A forked branch and a good elastic. Never let them touch you.</p>
+          <ul>
+            <li><b>85</b> Vitality — fragile, and fast</li>
+            <li>Rapid pebbles at any range, ammo refills itself</li>
+            <li><b>Piercing Shot</b>: charge to skewer a whole line</li>
+            <li><b>Roll</b> with invulnerability and a burst of speed</li>
+            <li><b>R</b>: a <b>Hand Grenade</b> for 100–500 a target</li>
+          </ul>
+          <span class="pick">Take the slingshot</span>
+        </button>
+
+        <button class="card" data-class="tanker">
+          <div class="card-art art-shield"></div>
+          <h2>Riot Shield</h2>
+          <div class="klass">→ TANKER</div>
+          <p>You will not be fast. You will not need to be.</p>
+          <ul>
+            <li><b>200</b> Vitality — the wall of the deep</li>
+            <li>Brace to block: <b>red attacks turn blue</b> and can be parried</li>
+            <li><b>R</b> picks Heavy Dash, Heavy Slam or <b>Ricochet</b></li>
+            <li>Upgrades to the <b>Spiky Shield</b> in Sarapolis</li>
+            <li>Slowest movement in the game</li>
+          </ul>
+          <span class="pick">Take the shield</span>
+        </button>
+
+        <button class="card" data-class="necromancer">
+          <div class="card-art art-bone"></div>
+          <h2>Bone Staff</h2>
+          <div class="klass">→ NECROMANCER</div>
+          <p>You do not need to be strong. You need to not be the one in front.</p>
+          <ul>
+            <li><b>100</b> Vitality — and a <b>mana</b> pool</li>
+            <li>RMB raises the servant on your wheel, four at once</li>
+            <li><b>Thrall</b> · <b>Bloat</b> · <b>Bone Brute</b> · <b>Jarona</b></li>
+            <li>The Brute takes the hits meant for you</li>
+            <li><b>R</b> switches which one you raise</li>
+          </ul>
+          <span class="pick">Take the bone staff</span>
+        </button>
+
+        <button class="card" data-class="mage">
+          <div class="card-art art-arcane"></div>
+          <h2>Wooden Staff</h2>
+          <div class="klass">→ MAGE</div>
+          <p>Four elements, eight spells, and never quite enough mana.</p>
+          <ul>
+            <li><b>82</b> Vitality — the thinnest skin in the deep</li>
+            <li><b>Fire</b> meteors · <b>Earth</b> vines and an <b>Earthquake</b></li>
+            <li><b>Ice</b> that slows, and rarely just ends things</li>
+            <li><b>Air</b> gusts, and a roaming <b>Tornado</b></li>
+            <li><b>R</b> spins the elemental wheel</li>
+          </ul>
+          <span class="pick">Take the wooden staff</span>
+        </button>
+      </div>
+
+      <div class="seedrow">
+        <label>World seed <input id="seedInput" type="text" placeholder="random"></label>
+        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · I inventory · TAB map · F fullscreen · ESC pause</span>
+      </div>
+    </div>
+  </div>
+  <!-- Sits outside the scrolling title screen so it stays pinned to the corner. -->
+  <div class="credit">Developed by Neil Uaine</div>
+  <div class="title-corner">
+    <button class="fs-btn" data-fullscreen><span class="fs-ic">⛶</span><span class="fs-label">Fullscreen</span></button>
+    <div class="install-hint hidden" id="installHint">For full screen on iPhone: <b>Share → Add to Home Screen</b></div>
+  </div>
+
+  <!-- ============ INVENTORY ============ -->
+  <div id="inventory" class="screen hidden">
+    <div class="modal inv">
+      <button class="modal-close" id="invClose" title="Close">✕</button>
+      <div class="inv-head">
+        <button class="inv-arrow" id="invPrev" title="Previous (←)">‹</button>
+        <div class="inv-title">
+          <h2 id="invName">You</h2>
+          <p class="sub" id="invSub"></p>
+        </div>
+        <button class="inv-arrow" id="invNext" title="Companions (→)">›</button>
+      </div>
+      <div class="inv-page" id="invPage"></div>
+      <div class="inv-body">
+        <div class="inv-slots" id="invSlots"></div>
+        <div class="inv-side">
+          <div class="inv-coins">◈ Coins <b id="invCoins">0</b></div>
+          <div class="statgrid" id="invStats"></div>
+        </div>
+      </div>
+      <div class="inv-bag-head">Bag — click an item to put it on whoever is shown</div>
+      <div class="inv-bag" id="invBag"></div>
+      <p class="sub">I or ESC to close · click a worn item to take it off · ‹ › or arrow keys switch character</p>
+    </div>
+  </div>
+
+  <!-- ============ SHOP ============ -->
+  <div id="shop" class="screen hidden">
+    <div class="modal inv">
+      <button class="modal-close" id="shopClose" title="Close">✕</button>
+      <h2>The Hollow Peddler</h2>
+      <p class="sub">"Everything here was somebody's. Now it can be yours."</p>
+      <div class="inv-coins">◈ Coins <b id="shopCoins">0</b></div>
+      <div class="inv-bag shop-list" id="shopList"></div>
+      <p class="sub">Bought gear goes to your bag — press I to put it on you or a companion · E or ESC to leave</p>
+    </div>
+  </div>
+
+  <!-- ============ LEVEL UP ============ -->
+  <div id="levelup" class="screen hidden">
+    <div class="modal">
+      <h2 id="luTitle">Level 2</h2>
+      <p class="sub">Choose a boon.</p>
+      <div class="perks" id="perkList"></div>
+    </div>
+  </div>
+
+  <!-- ============ PAUSE ============ -->
+  <div id="pause" class="screen hidden">
+    <div class="modal">
+      <h2>Paused</h2>
+      <div class="statgrid" id="pauseStats"></div>
+      <p class="sub">ESC to resume</p>
+      <button class="btn" id="resumeBtn">Resume</button>
+      <button class="btn" data-fullscreen><span class="fs-label">Fullscreen</span></button>
+      <button class="btn danger" id="quitBtn">Abandon run</button>
+    </div>
+  </div>
+
+  <!-- ============ MAP ============ -->
+  <div id="mapscreen" class="screen hidden">
+    <div class="modal wide">
+      <button class="modal-close" id="mapClose" title="Close">✕</button>
+      <h2>The Hollowdeep</h2>
+      <canvas id="bigmap" width="760" height="560"></canvas>
+      <p class="sub"><span class="ic you">●</span> you &nbsp;
+         <span class="ic" style="color:#ff3b1f">▲</span> red shrine &nbsp;
+         <span class="ic" style="color:#ffd479">◆</span> yellow &nbsp;
+         <span class="ic" style="color:#b05cff">✖</span> corrupted &nbsp;
+         <span class="ic" style="color:#7ea8ff">✧</span> boon &nbsp;
+         <span class="ic" style="color:#e2b34a">▮</span> chest &nbsp;
+         <span class="ic" style="color:#4fd0a8">≈</span> fountain &nbsp;
+         <span class="ic" style="color:#c8a86a">⌗</span> cage &nbsp;
+         <span class="ic" style="color:#fff">★</span> gate &nbsp; — TAB to close</p>
+    </div>
+  </div>
+
+  <!-- ============ END ============ -->
+  <div id="endscreen" class="screen hidden">
+    <div class="modal">
+      <h2 id="endTitle">You Died</h2>
+      <p class="sub" id="endSub"></p>
+      <div class="statgrid" id="endStats"></div>
+      <button class="btn" id="againBtn">Descend again</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/spatial.js"></script>
+<script src="js/save.js"></script>
+<script src="js/maps.js"></script>
+<script src="js/items.js"></script>
+<script src="js/dungeon.js"></script>
+<script src="js/art.js"></script>
+<script src="js/shrines.js"></script>
+<script src="js/npcs.js"></script>
+<script src="js/summons.js"></script>
+<script src="js/weapons.js"></script>
+<script src="js/entities.js"></script>
+<script src="js/platform.js"></script>
+<script src="js/touch.js"></script>
+<script src="js/game.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
