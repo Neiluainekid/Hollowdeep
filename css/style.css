@@ -309,7 +309,11 @@ h1{
 
 /* ---------------- Mobile / touch ---------------- */
 
-html,body{overscroll-behavior:none;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+html,body{overscroll-behavior:none;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%}
+/* touch-action is not inherited, so the double-tap-zoom block has to be on
+   every element — buttons and panels included — not just the body. */
+*{touch-action:manipulation}
+#touch,#touch *{touch-action:none}
 .modal{position:relative}
 .modal-close{
   position:absolute;top:10px;right:12px;width:34px;height:34px;border-radius:8px;cursor:pointer;
@@ -426,3 +430,25 @@ body.touch-mode .toast{top:42px;font-size:12px;padding:7px 14px;max-width:70vw;t
   .perk{width:180px;padding:12px}
   #bigmap{max-height:62vh;width:auto}
 }
+
+/* ---------------- Fullscreen / install ---------------- */
+
+/* Title-screen corner: sits outside the scrolling screen, like the credit. */
+.title-corner{
+  position:absolute;top:calc(14px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));
+  z-index:21;display:flex;flex-direction:column;align-items:flex-end;gap:8px;
+}
+#title.hidden ~ .title-corner{display:none}
+.fs-btn{
+  display:flex;align-items:center;gap:7px;cursor:pointer;
+  font:600 11.5px system-ui,sans-serif;letter-spacing:1.4px;text-transform:uppercase;color:var(--gold);
+  background:rgba(226,179,74,.1);border:1px solid var(--edge);border-radius:8px;padding:8px 12px;
+}
+.fs-btn:hover{background:rgba(226,179,74,.22)}
+.fs-btn .fs-ic{font-size:15px;line-height:1}
+.fs-btn.on{color:var(--ink);border-color:rgba(255,255,255,.2);background:rgba(255,255,255,.06)}
+.install-hint{
+  max-width:220px;text-align:right;font:11.5px/1.4 system-ui,sans-serif;color:var(--dim);
+  background:rgba(14,13,18,.85);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:8px 10px;
+}
+.install-hint b{color:var(--ink)}

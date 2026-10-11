@@ -4,6 +4,7 @@
 (function () {
   const game = new Game();
   window.game = game;
+  Platform.init();
 
   /* ---- save slot picker ----
      Slots are 1-based end to end: the number shown on screen, the number in
@@ -30,7 +31,7 @@
         selectedSlot = entry.slot;
         if (entry.data) {
           // Occupied slot: resume straight into it.
-          if (game.touch.active) game.touch.goFullscreen();
+          if (game.touch.active) Platform.enterFullscreen();
           game.resume(Save.readRun(entry.slot), entry.slot);
         } else {
           renderSlots();
@@ -55,7 +56,7 @@
       if (Save.hasRun(selectedSlot)
         && !confirm(`Slot ${selectedSlot} holds a suspended run. Overwrite it?`)) return;
       // On a phone, go fullscreen and landscape while we still hold a tap.
-      if (game.touch.active) game.touch.goFullscreen();
+      if (game.touch.active) Platform.enterFullscreen();
       game.start(card.dataset.class, document.getElementById('seedInput').value, selectedSlot);
     });
   });

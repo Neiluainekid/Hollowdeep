@@ -9,7 +9,9 @@
      right half     a floating AIM stick — push it and you attack that way
      right cluster  HEAVY (hold to charge, drag to aim) · DASH · PARRY ·
                     ABILITY (tap to cycle, hold and drag to pick) · USE
-     top right      inventory · map · pause · fullscreen
+     top right      inventory · map · pause · fullscreen (Platform binds
+                    that one on click: a touch press does not count as the
+                    gesture the Fullscreen API demands, the release does)
      rhythm break   four arrow pads replace W A S D
 
    Touch mode turns itself on with the first touch and back off the moment a
@@ -53,7 +55,7 @@ class TouchControls {
         <button class="ts" data-act="inventory" title="Inventory">🎒</button>
         <button class="ts" data-act="map" title="Map">🗺</button>
         <button class="ts" data-act="pause" title="Pause">❚❚</button>
-        <button class="ts" data-act="fullscreen" title="Fullscreen">⛶</button>
+        <button class="ts" data-fullscreen title="Fullscreen (F)">⛶</button>
       </div>
       <div class="trhythm hidden" id="touchRhythm">
         <button class="tr" data-key="KeyW">▲<i>W</i></button>
@@ -167,7 +169,6 @@ class TouchControls {
       case 'inventory': g.openInventory(); break;
       case 'map': g.toggleMap(); break;
       case 'pause': g.togglePause(); break;
-      case 'fullscreen': this.toggleFullscreen(); break;
     }
   }
 
@@ -219,28 +220,6 @@ class TouchControls {
     g.input.mouseL = g.input.mouseR = false;
     this.stickMove.classList.remove('on');
     this.stickAim.classList.remove('on');
-  }
-
-  toggleFullscreen() {
-    const el = document.documentElement;
-    if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
-    this.goFullscreen();
-    void el;
-  }
-
-  // Best effort: iPhone Safari has no element fullscreen, and orientation
-  // lock only works once fullscreen is granted. Either failing is fine.
-  goFullscreen() {
-    const el = document.documentElement;
-    const req = el.requestFullscreen || el.webkitRequestFullscreen;
-    if (!req) return;
-    try {
-      const p = req.call(el, { navigationUI: 'hide' });
-      if (p && p.then) {
-        p.then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(() => {}))
-          .catch(() => {});
-      }
-    } catch { /* not allowed here */ }
   }
 
   /* ---------------- per frame ---------------- */

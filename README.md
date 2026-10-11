@@ -109,6 +109,7 @@ then visit `http://localhost:8123`.
 | `E` | Interact with chests, fountains, shrines, merchants, the Warden's Gate — and John Space |
 | `I` | Inventory: your gear, your coins, your companions' gear |
 | `TAB` | World map |
+| `F` | Fullscreen on / off |
 | `ESC` | Pause |
 
 ### On a phone or tablet
@@ -133,7 +134,20 @@ Tap anywhere to skip a boss intro. Starting a run goes fullscreen and locks
 landscape where the browser allows it (Android Chrome does; iPhone Safari has
 no fullscreen for pages, so add it to the home screen for the best fit). Small
 screens also render the world zoomed out a little, so you can still see
-attacks coming.
+attacks coming. Double-tap and pinch zoom are blocked, so a fast double tap
+never zooms the page.
+
+**Install it as an app.** Hollowdeep is a PWA: on Android Chrome use *Install
+app* (or *Add to Home screen*), on iPhone Safari use *Share → Add to Home
+Screen*. It then launches from its own icon, full screen and landscape, with
+no browser bars — the best way to play on an iPhone — and it keeps working
+offline with the last version you loaded. Online it always fetches the newest
+build, so updates arrive as soon as they are pushed. Saves are per browser (and
+per installed app), so the phone keeps its own three slots.
+
+**Fullscreen** is a button on the title screen, in the pause menu, and in the
+touch controls, or `F` on a keyboard. Where a page cannot go fullscreen (iPhone
+Safari) the button is replaced by a hint to add the game to the home screen.
 
 ## The red shrines
 
@@ -398,9 +412,12 @@ js/npcs.js        companions (The Disgraced One, Switcher, John Space) and Follo
 js/summons.js     Necromancer minions and Mage ground effects
 js/weapons.js     the classes and the perk pools — the core design file
 js/entities.js    player, enemies, projectiles, pickups
+js/platform.js    fullscreen, the mobile zoom guard, service-worker registration
 js/touch.js       touch controls for phones and tablets
 js/game.js        loop, camera, renderer, lighting, interaction, UI
 js/main.js        bootstrap
+sw.js             service worker: offline play, network-first so updates land
+manifest.webmanifest, icons/   the installable-app manifest and icons
 ```
 
 ### Adding a class

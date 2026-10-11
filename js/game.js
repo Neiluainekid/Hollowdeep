@@ -302,6 +302,12 @@ class Game {
     };
 
     window.addEventListener('keydown', (e) => {
+      // F toggles fullscreen anywhere, menus included.
+      if (e.code === 'KeyF' && !e.repeat && !(e.target instanceof HTMLInputElement)) {
+        Platform.toggleFullscreen();
+        e.preventDefault();
+        return;
+      }
       // Menus first: they own the keyboard while they are open.
       if (this.state === 'inventory' || this.state === 'shop') {
         if (e.code === 'Escape' || (e.code === 'KeyI' && this.state === 'inventory')

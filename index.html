@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hollowdeep">
+<meta name="theme-color" content="#07070a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>Hollowdeep — Open World Dungeon</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -144,12 +150,16 @@
 
       <div class="seedrow">
         <label>World seed <input id="seedInput" type="text" placeholder="random"></label>
-        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · I inventory · TAB map · ESC pause</span>
+        <span class="hint">WASD move · Mouse aim · LMB attack · RMB heavy (hold) · SHIFT dash · E interact · I inventory · TAB map · F fullscreen · ESC pause</span>
       </div>
     </div>
   </div>
   <!-- Sits outside the scrolling title screen so it stays pinned to the corner. -->
   <div class="credit">Developed by Neil Uaine</div>
+  <div class="title-corner">
+    <button class="fs-btn" data-fullscreen><span class="fs-ic">⛶</span><span class="fs-label">Fullscreen</span></button>
+    <div class="install-hint hidden" id="installHint">For full screen on iPhone: <b>Share → Add to Home Screen</b></div>
+  </div>
 
   <!-- ============ INVENTORY ============ -->
   <div id="inventory" class="screen hidden">
@@ -205,6 +215,7 @@
       <div class="statgrid" id="pauseStats"></div>
       <p class="sub">ESC to resume</p>
       <button class="btn" id="resumeBtn">Resume</button>
+      <button class="btn" data-fullscreen><span class="fs-label">Fullscreen</span></button>
       <button class="btn danger" id="quitBtn">Abandon run</button>
     </div>
   </div>
@@ -250,6 +261,7 @@
 <script src="js/summons.js"></script>
 <script src="js/weapons.js"></script>
 <script src="js/entities.js"></script>
+<script src="js/platform.js"></script>
 <script src="js/touch.js"></script>
 <script src="js/game.js"></script>
 <script src="js/main.js"></script>
