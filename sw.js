@@ -6,13 +6,13 @@
    loaded plays as normal. Saves live in localStorage and are untouched. */
 'use strict';
 
-const CACHE = 'hollowdeep-v1';
+const CACHE = 'hollowdeep-v2';
 const SHELL = [
   './', './index.html', './css/style.css', './manifest.webmanifest',
   './js/util.js', './js/spatial.js', './js/save.js', './js/maps.js', './js/items.js',
   './js/dungeon.js', './js/art.js', './js/shrines.js', './js/npcs.js', './js/summons.js',
-  './js/weapons.js', './js/entities.js', './js/platform.js', './js/touch.js',
-  './js/game.js', './js/main.js',
+  './js/weapons.js', './js/entities.js', './js/bosses.js', './js/platform.js', './js/touch.js',
+  './js/audio.js', './js/game.js', './js/main.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png',
 ];

@@ -11,11 +11,78 @@ you cannot carry both.
 | **Riot Shield** | **Tanker** | 200 HP and the slowest legs in the deep. Bracing raises the shield, which turns **red attacks blue** — nothing is unblockable to you. Upgrades to the **Spiky Shield** in Sarapolis. |
 | **Bone Staff** | **Necromancer** | 100 HP and a mana pool. RMB raises whichever servant is on your wheel, four standing at once. |
 | **Wooden Staff** | **Mage** | 82 HP, the thinnest skin in the deep, and four elements on a wheel — eight spells in total. |
+| **Bare Fists** | **Ninja** | 85 HP and quick alternating jabs. A **Smoke Bomb** leaves enemies dizzy enough to attack each other, and **Ambush Mode** makes you unseen — strike from hiding for a guaranteed **100-damage critical**. |
 
-The five share almost nothing: separate stat lines, separate resources, separate
-level-up perk pools (8 shared boons + 6 exclusive to each class).
+The six share almost nothing: separate stat lines, separate resources, separate
+level-up perk pools (8 shared boons + 6 exclusive to most classes), and each has
+its own Forgotten Shrine boons.
 
 *Developed by Neil Uaine.*
+
+## Update 4.0 at a glance
+
+- **A third stage: Day-ZEE.** After Sarapolis the run climbs out of the deep
+  into a military base the dead overran — the first stage under open sky:
+  roads, yards, sandbags, crates and floodlights, with a grey dusk instead of
+  torchlight and ash on the wind. It has its own bestiary (nothing from the
+  deep follows you up), two war machines, and two bosses at **500,000 HP**.
+  Every class gets a third weapon tier there.
+- **Ten new enemies**, all zombie or military: Shambler, Sprinter, Spewer,
+  Hazmat Husk, Infected Grunt, Machine Gunner, Grenadier, Riot Zombie, Zombie
+  K9 and Sniper (see the bestiary).
+- **Two minibosses** — the **Battle Tank** in the motor pool and the
+  **Battleship** sitting in a flooded dry dock. 50,000 HP each, and they hit
+  hard. Each drops a **unique accessory** that no peddler sells (kill a second
+  one and it pays 1500 coins instead).
+- **Day-ZEE bosses:** **Colonel Zee**, then **Judgement 2.0** steps out of his
+  wreckage. 500,000 HP each.
+- **Boss reworks.** Flowery fights with **vines** (eruptions that root you,
+  and a cage of them around you), **floral** attacks (petal bursts and fans)
+  and a **slam**. The Sun God fires **laser projectiles**, brings down
+  **laser pillars**, sweeps a beam, and from phase 2 calls **Sun Minions**
+  (10,000 HP, never more than two). Judgement swings and throws **hammers**,
+  passes **Prejudice** (crossing beams of judgement that mark you to take 30%
+  more damage for 5s), and **slams** — every slam a parryable gold HEAVY.
+- **Corrupted shrines** wake a genuine **50,000 HP miniboss** — the Corrupted
+  Colossus, the Brood Mother, the Hex Knight, or (in Day-ZEE) the Abomination.
+  They pay out accordingly.
+- **The Ninja** — a sixth class (see the top table and the wheel below).
+- **Tanker Ricochet, reworked:** no more timing window. While you roll,
+  **mash M1** to fill the bounce bar. Full, and the next wall or enemy throws
+  you off in a blue shockwave (and the bar empties — mash again). Hit
+  something with it short and the ricochet is missed: you **lose 100 stamina
+  for 1 second**.
+- **Mage Ice heavy → Blizzard:** 50 mana, two seconds of storm riding with
+  you that slows everything around you and hits it for **200**.
+- **Bloat** now explodes across **30×30 tiles** for **1000–5000** per enemy.
+- **John Space** keeps his own look once he joins you, and his health bar
+  only shows when you are near him.
+- **100 more accessories and a fifth slot, the Modifier.** Modifiers change
+  what your weapon does to whatever it hits — fire, frost, chain lightning,
+  poison, bleeding, hexes, and chaos that turns enemies on each other — for
+  **1000–5000** coins. The other new pieces are a military line of armor,
+  boots and gauntlets above the old ceiling, and 24 new rings (stamina, mana,
+  heavy damage, boss damage, a Phoenix Feather that survives one killing blow
+  per map…).
+- **Four new companions**, only in the later stages: the **Ember Knight** and
+  the **Glass Saint** in Sarapolis, **Field Medic Ross** and **Sgt. Holloway**
+  in Day-ZEE.
+- **More Forgotten Shrine boons** — three per class plus two for anyone, only
+  offered at the blue shrines, which always offer at least one.
+- **Music and boss music.** A synthesised soundtrack per stage, plus miniboss,
+  boss and final-boss tracks. `M` toggles it (it is remembered), as does the
+  pause menu.
+- **More sound effects:** gunfire, cannons, lasers, beams, groans, smoke,
+  ambushes, blizzards, gavels, coins, level-ups, shrines, a low-health
+  heartbeat and more.
+- **Hard Mode**, toggled on the title screen: enemies have 60% more health,
+  hit 50% harder, attack 15% faster and come in bigger, more elite packs;
+  bosses have 50% more health; fountains heal less; the parry window is
+  tighter. The HUD says HARD so you never forget.
+
+Saves from 3.0 keep working: the first two maps generate exactly as before
+(the new shrines and cages are appended after everything older), and a run
+in progress simply carries on.
 
 ## Update 3.0 at a glance
 
@@ -52,7 +119,7 @@ a scramble.
 | | Cost | Cooldown | |
 |---|---|---|---|
 | **Thrall** | 14 | 2s | 10 damage a swing, crumbles after 15 seconds |
-| **Bloat** | 22 | 10s | Detonates for 40 across a **10×10-tile** area. Summoning it drains **all** your mana for 5s and holds your health at **65%** for 5s (the trimmed health comes back) |
+| **Bloat** | 22 | 10s | Detonates for **1000–5000** per enemy across a **30×30-tile** area. Summoning it drains **all** your mana for 5s and holds your health at **65%** for 5s (the trimmed health comes back) |
 | **Bone Brute** | 40 | 30s | 200 HP, one at a time, enemies attack *it* instead of you, and it **bashes** for 100 |
 | **Jarona** | 18 | 2s | A shouted **3-hit bounce combo**. Wear the **Jarona Necklace** (a ring) and every bounce is a **super dash** for 100–200 |
 
@@ -67,11 +134,20 @@ Ricochet perk also kick off walls, and **dashing into one (or parrying next to
 it) deflects it** back out along your aim at 1.9x speed and 1.6x damage.
 
 **Tanker brace modes** — Heavy Dash, Heavy Slam and **Ricochet**: the heavy
-rolls you forward, and the ring around you turns **green** as you are about to
-meet an enemy or a wall. Click `LMB` then and the impact becomes a **blue
-shockwave** that bounces you off to keep rolling, as long as you keep timing
-it. Click when it is not green and it turns **yellow** and costs 50 stamina.
-Click nothing and you just bump to a stop. Taking a hit ends the roll.
+rolls you forward with a **bounce bar** under you. **Mash `LMB`** (tap, on a
+phone) to fill it — it drains on its own. With the bar full, the next enemy
+or wall becomes a **blue shockwave** that bounces you off to keep rolling, and
+the bar empties so you mash again. Meet something with it short and the
+ricochet is missed: **100 stamina gone for one second**. Taking a hit ends the
+roll.
+
+**Ninja stance** — `R` swaps **Open Fists** and **Ambush Mode**. In Ambush
+Mode you vanish: enemies lose track of you and wander off (bosses and
+minibosses are not fooled). Your first blow from hiding is a guaranteed
+**100-damage critical**; attacking gives you away, and three quiet seconds
+later you vanish again. The **Smoke Bomb** (RMB, 10 second cooldown) lands
+where you aim: everything inside turns dizzy and attacks its own side, and the
+cloud poisons lightly. Bosses only cough.
 
 **Mage elements** — each has a light cast and a charged heavy:
 
@@ -79,7 +155,7 @@ Click nothing and you just bump to a stop. Taking a hit ends the roll.
 |---|---|---|
 | **Fire** | Fireball, **30–40** | **Meteor** — 50 to the target, 30 around it. Half your mana. |
 | **Earth** | Vine trap that roots and bleeds | **Earthquake** — 100 damage every 2s to everything in a **10×10-tile** area around you. Drains **all** your mana and holds it at zero for 3s |
-| **Ice** | Shard, **30–40**, slows, 1-in-100 to freeze outright | **Ice Wall** — 60 to the target, 20 around it. 70% of your mana. |
+| **Ice** | Shard, **30–40**, slows, 1-in-100 to freeze outright | **Blizzard** — a storm rides with you for 2s: everything around you slowed and hit for **200**. 50 mana. |
 | **Air** | Gust — flings the weak, shoves the rest | **Tornado** — sets down where you point and roams from enemy to enemy, **10 damage a second** to everything it touches |
 
 Elites and bosses are too heavy to root, fling or blow back, and can never be
@@ -107,6 +183,7 @@ then visit `http://localhost:8123`.
 | `SPACE` | Parry — a short window that negates blue attacks |
 | `R` | Tap to cycle your loadout, hold to pick from the wheel |
 | `E` | Interact with chests, fountains, shrines, merchants, the Warden's Gate — and John Space |
+| `M` | Music on / off |
 | `I` | Inventory: your gear, your coins, your companions' gear |
 | `TAB` | World map |
 | `F` | Fullscreen on / off |
@@ -176,9 +253,9 @@ both maps in red.
 
 ## The bestiary
 
-Seventeen enemy types, each built around the parry/dodge read. Enemies in the
-first dungeon, Tripolisis, have 20% less health and damage and turn up elite
-less often than they used to.
+Seventeen enemy types in the deep and ten more on the surface, each built
+around the parry/dodge read. Enemies in the first dungeon, Tripolisis, have
+20% less health and damage and turn up elite less often than they used to.
 
 | | Attacks |
 |---|---|
@@ -200,15 +277,48 @@ less often than they used to.
 | **Chest Mimic** | sits still looking like furniture until you are close. chomp · **gulp** |
 | **Phantom Lancer** | blinks out beside you. jab · **thrust**, long and narrow — step sideways, not back |
 
+### Day-ZEE
+
+| | Attacks |
+|---|---|
+| **Shambler** | bite · **grab** |
+| **Sprinter** | claw · leap. Very fast |
+| **Spewer** | three gouts of bile, each leaving a burning puddle |
+| **Hazmat Husk** | slam · **rupture**, a ring of gas that leaves the floor poisoned |
+| **Infected Grunt** | a three-round burst — parry the bullet coming at you · bayonet |
+| **Machine Gunner** | a long tracking stream of bullets. Break line of sight |
+| **Grenadier** | lobs grenades at where you stand |
+| **Riot Zombie** | takes 70% less from the front, like an Ironclad. bash · **shove** |
+| **Zombie K9** | bite · maul. Faster than you |
+| **Sniper** | **snipe** — the red laser sight is the whole warning. Get off the line |
+
+### Minibosses
+
+50,000 HP each. Too heavy to knock back, root, fling, freeze or execute, and —
+like a boss — only their gold HEAVY attacks can be parried, which opens the
+rhythm break.
+
+| | Where | Kit |
+|---|---|---|
+| **Battle Tank** | Day-ZEE, the motor pool | machine gun · cannon · artillery · **tread crush**. Drops *Tank Commander's Treads* |
+| **Battleship** | Day-ZEE, the flooded dry dock | flak · missiles · broadside · **main gun** · depth charges if you get close. Drops *Broadside Gauntlets* |
+| **Corrupted Colossus** | corrupted shrines | pound · boulder · quake · **crush** |
+| **The Brood Mother** | corrupted shrines | bite · venom · calls her brood · **pounce** |
+| **Hex Knight** | corrupted shrines | blinks · slash · hex orbs · hex beams · **cleave** |
+| **The Abomination** | Day-ZEE's corrupted shrines | swipe · bile · gas · **slam** |
+
 ## Bosses
 
-Three, each with a named health bar, an intro, and things to say:
+Five, each with a named health bar, an intro, things to say, and (since 4.0)
+a kit of its own rather than a shared brain:
 
-| | Map | HP | Character |
+| | Map | HP | Kit |
 |---|---|---|---|
-| **Flowery** — *The Bloom That Watches* | Tripolisis | 100,000 | Lashes and volleys; summons and area denial |
-| **The Sun God** — *Predicament King* | Sarapolis | 200,000 | A corona of rays; relentless ranged pressure |
-| **Judgement** — *Pure Devastation* | Sarapolis (final) | 200,000 | Steps out of the Sun God's wreckage. Fists, swipes and rushes |
+| **Flowery** — *The Bloom That Watches* | Tripolisis | 100,000 | **Vines** (a line of eruptions that roots you, a cage of them around you) · **floral** petal bursts and fans · pollen · the **Bloom Slam** |
+| **The Sun God** — *Predicament King* | Sarapolis | 200,000 | **Laser** volleys and lances · **laser pillars** where you stand · a sweeping beam · **Sun Minions** from phase 2 (10,000 HP, two at most) · Solar Flare slam |
+| **Judgement** — *Pure Devastation* | Sarapolis (final) | 200,000 | **Hammers** swung and thrown · **Prejudice**, crossing beams that mark you (+30% damage taken, 5s) · **slams**, all parryable |
+| **Colonel Zee** — *Commander of the Dead* | Day-ZEE | 500,000 | Rifle bursts · bayonet · **airstrikes** walking across you · gas grenades · calls reinforcements · bayonet charge and stomp |
+| **Judgement 2.0** — *The Final Verdict* | Day-ZEE (final) | 500,000 | Everything Judgement does, faster, plus a **storm of gavels**, a **sweeping verdict** and a **fan of Prejudice** |
 
 All three carry a **1.5x damage multiplier** on top of region scaling and fight
 in **combos**: strings of light attacks that end in a **HEAVY**, telegraphed in
@@ -242,7 +352,8 @@ lean — with legs that stride and a torso that leans into a swing.
 
 ## Companions
 
-Two are found locked in cages and freed with `E`; the third decides for himself.
+Two are found locked in cages in every stage and freed with `E`, two more are
+caged only in Sarapolis and two only in Day-ZEE; John Space decides for himself.
 They are persistent — no expiry timer — they pull attacks off you, and
 **drinking from a fountain heals every companion with you**, which is the
 reason to save a fountain rather than sip it the moment you find one.
@@ -252,6 +363,10 @@ reason to save a fountain rather than sip it the moment you find one.
 | **The Disgraced One** | 200 | **Disgrace Flurry** — six barehanded blows in a blur |
 | **Switcher** | 150 | Swaps places with enemies near you, and **Thunderclap** staggers everything around it |
 | **John Space** | 500 | **Space Punch** — crosses the room in one step and hits like a comet |
+| **The Ember Knight** *(Sarapolis)* | 260 | **Flame Wheel** — a burning spin; every hit sets things alight |
+| **The Glass Saint** *(Sarapolis)* | 170 | **Mirror Ward** — the next hit on you is swallowed, and some goes back |
+| **Field Medic Ross** *(Day-ZEE)* | 190 | Shoots from range; **Patch Up** heals you and the others |
+| **Sgt. Holloway** *(Day-ZEE)* | 300 | Rifle bursts from range; **Airstrike** on whatever he is fighting |
 
 Companions **level up** from kills (the full kill if they landed it, a share of
 any kill nearby), gaining health and damage each level. They wear gear in the
@@ -310,10 +425,14 @@ of their pages. Items that do nothing for a companion, and the totem, say so.
 | **Boots** | Speed |
 | **Ring** | One specific buff: health, regeneration, heal-on-kill, crit, coins, experience, faster attacks, a longer parry window, cheaper dashes, thorns, luck… plus the Jarona Necklace and the Cursed Totem |
 | **Gauntlets** | Damage |
+| **Modifier** | What your hits do: burn, frost, chain lightning, poison, bleed, hex, or chaos (enemies attack each other). Your own weapon only |
 
-There are **100 accessories**: 25 per slot, the first 24 of each non-ring slot
-climbing a material ladder from Rag to Starforged, plus one named legendary
-each. The **Hollow Peddler** keeps a stall in the entrance hall of every map
+There are **200 accessories** (and two uniques). The original hundred: 25 per
+slot, the first 24 of each non-ring slot climbing a material ladder from Rag
+to Starforged, plus one named legendary each. Update 4.0 added 28 modifiers
+(seven families, four strengths, 1000–5000 coins), 16 each of military armor,
+boots and gauntlets (Kevlar to Doomsday, sold from Sarapolis on), and 24 rings.
+Every peddler keeps a few modifiers behind the counter. The **Hollow Peddler** keeps a stall in the entrance hall of every map
 and one or two more deeper in (`$` on the map); each stocks nine or so pieces,
 and what you buy is gone from that stall for good. Chests sometimes hold an
 accessory too.
@@ -408,10 +527,12 @@ js/items.js       the 100 accessories, gear slots, and shop stock
 js/dungeon.js     procedural generation, regions, props, lighting anchors
 js/art.js         every creature and player silhouette, plus attack poses
 js/shrines.js     shrine families, outcomes and the shared icon table
-js/npcs.js        companions (The Disgraced One, Switcher, John Space) and Follow
+js/npcs.js        companions and Follow
 js/summons.js     Necromancer minions and Mage ground effects
 js/weapons.js     the classes and the perk pools — the core design file
 js/entities.js    player, enemies, projectiles, pickups
+js/bosses.js      Day-ZEE bestiary, minibosses, boss kits, beams (Update 4.0)
+js/audio.js       synthesised sound effects and the music sequencer
 js/platform.js    fullscreen, the mobile zoom guard, service-worker registration
 js/touch.js       touch controls for phones and tablets
 js/game.js        loop, camera, renderer, lighting, interaction, UI

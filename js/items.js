@@ -14,7 +14,19 @@
    and the companion turns on you.
 
    Items are stored by id everywhere (bag, equipment, shop stock, saves) so a
-   retune here fixes old saves instead of stranding stale numbers in them. */
+   retune here fixes old saves instead of stranding stale numbers in them.
+
+   Update 4.0 adds 100 more, and a fifth slot:
+
+     Modifier   changes what your weapon does to whatever it hits — burns,
+                frost, chain lightning, poison, bleeding, hexes that weaken
+                or expose, and chaos that makes enemies attack each other.
+                1000 to 5000 coins each.
+
+   The rest of the 100 are a military line for Day-ZEE (16 armor, 16 boots,
+   16 gauntlets, all above the old Starforged ceiling) and 24 new rings. Two
+   more pieces are never sold anywhere: the Battle Tank and the Battleship
+   each drop one, once. */
 'use strict';
 
 const ITEM_SLOTS = [
@@ -22,6 +34,7 @@ const ITEM_SLOTS = [
   { id: 'boots', name: 'Boots', icon: '⇲', stat: 'Speed' },
   { id: 'ring', name: 'Ring', icon: '◯', stat: 'Buff' },
   { id: 'gauntlets', name: 'Gauntlets', icon: '✊', stat: 'Damage' },
+  { id: 'modifier', name: 'Modifier', icon: '✺', stat: 'On hit' },
 ];
 
 const RARITY = [
@@ -30,6 +43,7 @@ const RARITY = [
   { id: 'epic', name: 'Epic', color: '#c07bff' },
   { id: 'legendary', name: 'Legendary', color: '#ffb347' },
   { id: 'cursed', name: 'Cursed', color: '#ff3b1f' },
+  { id: 'unique', name: 'Unique', color: '#4fffd0' },
 ];
 
 /* The ladder every non-ring slot climbs. Index is power. */
@@ -82,6 +96,99 @@ const RING_DEFS = [
   },
 ];
 
+/* ---------------- Update 4.0: the military line ---------------- */
+
+const MIL_MATERIALS = [
+  'Kevlar', 'Ballistic', 'Ceramic', 'Riot', 'Titanium', 'Composite', 'Hazmat', 'Graphene',
+  'Recon', 'Spec-Ops', 'Nanoweave', 'Reactive', 'Exo', 'Railplate', 'Juggernaut', 'Doomsday',
+];
+const MIL_NOUNS = {
+  armor: ['Vest', 'Rig', 'Plate Carrier', 'Exosuit'],
+  boots: ['Combat Boots', 'Jump Boots', 'Treads', 'Servo Boots'],
+  gauntlets: ['Tactical Gloves', 'Knuckles', 'Breachers', 'Power Fists'],
+};
+
+const RING_DEFS_4 = [
+  { name: 'Soldier\'s Dog Tag', kind: 'stamina', value: 30, price: 700, desc: '+30 maximum stamina.', player: true },
+  { name: 'Ammo Belt Loop', kind: 'stamina', value: 60, price: 1500, desc: '+60 maximum stamina.', player: true },
+  { name: 'Arcane Battery', kind: 'mana', value: 40, price: 900, desc: 'Casters: +40 maximum mana.', player: true },
+  { name: 'Overcharged Cell', kind: 'mana', value: 80, price: 1900, desc: 'Casters: +80 maximum mana.', player: true },
+  { name: 'Breacher\'s Band', kind: 'heavy', value: 0.25, price: 1100, desc: 'Heavy attacks hit 25% harder.', player: true },
+  { name: 'Demolition Ring', kind: 'heavy', value: 0.5, price: 2400, desc: 'Heavy attacks hit 50% harder.', player: true },
+  { name: 'Giant-Slayer Signet', kind: 'bossDmg', value: 0.25, price: 1600, desc: '+25% damage to bosses and minibosses.', player: true },
+  { name: 'Kingbreaker', kind: 'bossDmg', value: 0.5, price: 3200, desc: '+50% damage to bosses and minibosses.', player: true },
+  { name: 'Phoenix Feather', kind: 'phoenix', value: 1, price: 3000, desc: 'Once per map, a killing blow leaves you at 30% health instead.', player: true },
+  { name: 'Shockwave Loop', kind: 'knock', value: 0.6, price: 650, desc: 'Knock enemies 60% further.', player: true },
+  { name: 'Long Arm Ring', kind: 'reach', value: 0.15, price: 1200, desc: 'Melee reaches 15% further.', player: true },
+  { name: 'Headsman\'s Ring', kind: 'execute', value: 0.5, price: 1400, desc: '+50% damage to enemies below a third of their health.', player: true },
+  { name: 'Medic\'s Band', kind: 'regen', value: 6, price: 2600, desc: 'Regenerate 6 health a second.' },
+  { name: 'Titan\'s Heart', kind: 'maxHp', value: 120, price: 2200, desc: '+120 maximum health.' },
+  { name: 'Field Surgeon\'s Seal', kind: 'killHeal', value: 18, price: 1700, desc: 'Every kill heals 18.', player: true },
+  { name: 'Marksman\'s Coil', kind: 'crit', value: 0.28, price: 2500, desc: '+28% critical chance.' },
+  { name: 'Ring of Atrocity', kind: 'dmgPct', value: 0.4, price: 2800, desc: '+40% damage.' },
+  { name: 'Bunker Ring', kind: 'defPct', value: 0.2, price: 2300, desc: 'Take 20% less damage.' },
+  { name: 'Sprinter\'s Band', kind: 'speedPct', value: 0.2, price: 1500, desc: '+20% movement speed.' },
+  { name: 'Quartermaster\'s Ring', kind: 'gold', value: 1.5, price: 1800, desc: '+150% coins.', player: true },
+  { name: 'Veteran\'s Ring', kind: 'xp', value: 1, price: 1800, desc: 'Double experience.', player: true },
+  { name: 'Trigger Discipline', kind: 'cooldown', value: 0.2, price: 2100, desc: 'Attacks recover 20% faster.', player: true },
+  { name: 'Riposte Ring', kind: 'parry', value: 1, price: 2000, desc: 'Your parry window is twice as long.', player: true },
+  { name: 'Razorwire Ring', kind: 'thorns', value: 40, price: 1300, desc: 'Anything that hits you takes 40 back.', player: true },
+];
+
+/* Modifiers: seven families, four strengths each. Every hit you land with
+   your own weapon applies the family's effect (companions and minions do
+   not carry your modifier). Numbers climb with the price. */
+const MODIFIER_FAMILIES = [
+  {
+    kind: 'burn', names: ['Ember Rune', 'Blaze Rune', 'Inferno Rune', 'Hellfire Sigil'],
+    color: '#ff8a3c', values: [12, 22, 36, 55],
+    desc: v => `Fire: hits set enemies burning for ${v} a second over 3 seconds.`,
+  },
+  {
+    kind: 'frost', names: ['Frost Rune', 'Rime Rune', 'Glacier Rune', 'Absolute Zero'],
+    color: '#a9dcff', values: [1.5, 2.5, 3.5, 5],
+    desc: v => `Ice: hits slow enemies to a crawl for ${v}s${v >= 5 ? ', and 1 in 25 freezes them solid' : ''}.`,
+  },
+  {
+    kind: 'shock', names: ['Spark Coil', 'Storm Coil', 'Tempest Coil', 'Thunder God\'s Coil'],
+    color: '#ffe066', values: [20, 35, 55, 85],
+    desc: v => `Lightning: hits arc to up to 3 nearby enemies for ${v}.`,
+  },
+  {
+    kind: 'poison', names: ['Venom Vial', 'Toxin Vial', 'Plague Vial', 'Blight Heart'],
+    color: '#8fd14a', values: [8, 14, 22, 34],
+    desc: v => `Poison: each hit adds a stack — ${v} a second per stack, up to 5, for 4 seconds.`,
+  },
+  {
+    kind: 'bleed', names: ['Serrated Edge', 'Barbed Edge', 'Hemorrhage', 'Exsanguinator'],
+    color: '#ff5a5a', values: [0.06, 0.1, 0.15, 0.22],
+    desc: v => `Bleed: hits open a wound that drains ${Math.round(v * 100)}% of the hit every 0.5s for 3 seconds.`,
+  },
+  {
+    kind: 'hex', names: ['Hex of Frailty', 'Curse of Ruin', 'Doom Mark', 'Death Sentence'],
+    color: '#c07bff', values: [0.15, 0.22, 0.3, 0.4],
+    desc: v => `Hex: hit enemies deal ${Math.round(v * 100)}% less damage and take ${Math.round(v * 100)}% more, for 4 seconds.`,
+  },
+  {
+    kind: 'chaos', names: ['Daze Charm', 'Vertigo Charm', 'Madness Charm', 'Chaos Engine'],
+    color: '#ff7ad6', values: [0.1, 0.16, 0.24, 0.35],
+    desc: v => `Chaos: ${Math.round(v * 100)}% of hits leave the enemy dizzy — it attacks its friends for 3 seconds.`,
+  },
+];
+
+const UNIQUE_ITEMS = [
+  {
+    id: 'tank-treads', slot: 'boots', name: 'Tank Commander\'s Treads', rarity: 'unique', unique: true,
+    price: 0, speed: 0.3, def: 0.12,
+    desc: 'Dropped by the Battle Tank. +30% movement speed and take 12% less damage. Never sold.',
+  },
+  {
+    id: 'broadside-gauntlets', slot: 'gauntlets', name: 'Broadside Gauntlets', rarity: 'unique', unique: true,
+    price: 0, dmg: 0.55, critBonus: 0.1,
+    desc: 'Dropped by the Battleship. +55% damage and +10% critical chance. Never sold.',
+  },
+];
+
 function buildAccessories() {
   const out = [];
   for (const slot of ['armor', 'boots', 'gauntlets']) {
@@ -112,6 +219,43 @@ function buildAccessories() {
       desc: r.desc, playerOnly: !!r.player, cursed: !!r.cursed,
     });
   });
+
+  /* ---- Update 4.0: one hundred more ---- */
+  for (const slot of ['armor', 'boots', 'gauntlets']) {
+    MIL_MATERIALS.forEach((mat, i) => {
+      const nouns = MIL_NOUNS[slot];
+      const item = {
+        id: `${slot}-m${i + 1}`, slot, name: `${mat} ${nouns[Math.floor(i / 4)]}`,
+        rarity: i < 6 ? 'rare' : i < 12 ? 'epic' : 'legendary',
+        price: Math.round(1000 + i * 150 + i * i * 6), mil: true,
+      };
+      if (slot === 'armor') { item.def = 0.18 + i * 0.009; item.desc = `Take ${Math.round(item.def * 100)}% less damage.`; }
+      if (slot === 'boots') { item.speed = 0.18 + i * 0.011; item.desc = `+${Math.round(item.speed * 100)}% movement speed.`; }
+      if (slot === 'gauntlets') { item.dmg = 0.31 + i * 0.02; item.desc = `+${Math.round(item.dmg * 100)}% damage.`; }
+      out.push(item);
+    });
+  }
+  RING_DEFS_4.forEach((r, i) => {
+    out.push({
+      id: `ring-m${i + 1}`, slot: 'ring', name: r.name, ring: { kind: r.kind, value: r.value },
+      rarity: r.price >= 2500 ? 'legendary' : r.price >= 1500 ? 'epic' : 'rare',
+      price: r.price, desc: r.desc, playerOnly: !!r.player, mil: true,
+    });
+  });
+  MODIFIER_FAMILIES.forEach((fam, fi) => {
+    fam.names.forEach((name, tier) => {
+      const value = fam.values[tier];
+      out.push({
+        id: `mod-${fam.kind}-${tier + 1}`, slot: 'modifier', name,
+        mod: { kind: fam.kind, value, tier: tier + 1, color: fam.color },
+        rarity: ['rare', 'epic', 'legendary', 'legendary'][tier],
+        // 1000 at the bottom of the cheapest family, 5000 at the top.
+        price: Math.round(1000 + tier * 1250 + fi * 40),
+        desc: fam.desc(value), playerOnly: true,
+      });
+    });
+  });
+  for (const u of UNIQUE_ITEMS) out.push({ ...u });
   return out;
 }
 
@@ -127,7 +271,7 @@ const Gear = {
   get(id) { return ACCESSORY_BY_ID[id] || null; },
   slotOf(id) { const a = this.get(id); return a ? a.slot : null; },
   rarity(item) { return RARITY.find(r => r.id === item.rarity) || RARITY[0]; },
-  blankEquip() { return { armor: null, boots: null, ring: null, gauntlets: null }; },
+  blankEquip() { return { armor: null, boots: null, ring: null, gauntlets: null, modifier: null }; },
 
   // Player: fields the rest of the game reads (see Player.equip* getters).
   applyToPlayer(p, item, sign) {
@@ -157,6 +301,17 @@ const Gear = {
       case 'luck': p.luck += value * sign; break;
       case 'jarona': p.jaronaNecklace = sign > 0; break;
       case 'cursed': if (sign > 0) p.applyCurse(); else p.liftCurse(); break;
+      // Update 4.0 ring kinds.
+      case 'stamina': p.maxEnergy += value * sign; p.energy = Math.min(p.energy, p.maxEnergy); break;
+      case 'mana':
+        if (!p.usesMana) break;
+        p.maxMana += value * sign; p.mana = Math.min(p.mana, p.maxMana); break;
+      case 'heavy': p.heavyMul += value * sign; break;
+      case 'bossDmg': p.bossDmg += value * sign; break;
+      case 'phoenix': p.phoenix = sign > 0; break;
+      case 'knock': p.knockMul += value * sign; break;
+      case 'reach': p.rangeMul += value * sign; break;
+      case 'execute': p.executioner += value * sign; break;
     }
   },
 
@@ -220,9 +375,12 @@ const Gear = {
 const Shop = {
   rollStock(seed, mapNumber, count = 9) {
     const r = U.rng(seed);
-    const pool = ACCESSORIES.filter(a => a.id !== 'cursed-totem');
+    // Modifiers get their own shelf below; unique drops are never for sale.
+    const pool = ACCESSORIES.filter(a => a.id !== 'cursed-totem' && !a.unique && a.slot !== 'modifier'
+      // The military line is Day-ZEE kit: it only turns up from Sarapolis on.
+      && (mapNumber > Maps.FIRST || !a.mil));
     const stock = [];
-    const bias = mapNumber > Maps.FIRST ? 0.45 : 0;
+    const bias = mapNumber >= 3 ? 0.62 : mapNumber > Maps.FIRST ? 0.45 : 0;
     while (stock.length < count && pool.length) {
       // Skew toward cheaper items on map 1, pricier on map 2.
       const k = Math.pow(r(), mapNumber > Maps.FIRST ? 0.7 : 1.6);
@@ -236,6 +394,60 @@ const Shop = {
     if (r.chance(0.34)) stock.push('cursed-totem');
     // And the necklace shows up often enough to plan a Necromancer around.
     if (!stock.includes('jarona-necklace') && r.chance(0.4)) stock.push('jarona-necklace');
+    // Update 4.0: every peddler keeps a couple of modifiers behind the counter,
+    // pricier ones the deeper you go.
+    const mods = ACCESSORIES.filter(a => a.slot === 'modifier' && a.mod.tier <= mapNumber + 1);
+    for (let i = 0; i < 2 + (mapNumber > Maps.FIRST ? 1 : 0) && mods.length; i++) {
+      stock.push(mods.splice(r.int(0, mods.length), 1)[0].id);
+    }
     return stock;
+  },
+};
+
+/* ------------------------------------------------------------------ */
+/* Update 4.0: modifier effects. Called from Enemy.takeDamage for every  */
+/* hit the player lands with their own weapon. Damage dealt from in here */
+/* is never itself a "player hit", so effects cannot chain into loops.   */
+/* ------------------------------------------------------------------ */
+
+const Mods = {
+  onHit(e, game, mod, dealt) {
+    const big = e.isHeavyweight;
+    const v = mod.value;
+    switch (mod.kind) {
+      case 'burn':
+        e.burnT = 3; e.burnDps = Math.max(e.burnDps || 0, v);
+        break;
+      case 'frost':
+        e.chill = Math.max(e.chill, v);
+        if (v >= 5 && !big && U.chance(0.04)) e.stun = Math.max(e.stun, 1.6);
+        break;
+      case 'shock': {
+        let n = 0;
+        for (const o of game.enemyHash.query(e.x, e.y, 200, [])) {
+          if (o === e || !o.targetable || U.dist(e.x, e.y, o.x, o.y) > 200) continue;
+          game.zap(e.x, e.y, o.x, o.y, mod.color);
+          o.takeDamage(v, game, e.x, e.y, 60, false);
+          if (++n >= 3) break;
+        }
+        break;
+      }
+      case 'poison':
+        e.poisonStacks = Math.min(5, (e.poisonStacks || 0) + 1);
+        e.poisonDps = v; e.poisonT = 4;
+        break;
+      case 'bleed':
+        e.bleedT = 3; e.bleedDps = Math.max(e.bleedDps || 0, dealt * v * 2);
+        break;
+      case 'hex':
+        e.hexT = 4; e.hexAmt = v;
+        break;
+      case 'chaos':
+        if (!big && U.chance(v)) {
+          e.dizzy = Math.max(e.dizzy || 0, 3);
+          game.fx.text(e.x, e.y - e.radius - 24, 'DIZZY', mod.color, 13);
+        }
+        break;
+    }
   },
 };

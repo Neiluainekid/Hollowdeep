@@ -155,6 +155,22 @@ class Player {
     this.roll = null;                    // Tanker ricochet roll
     this.dashStrikeDmg = 0;              // heavy dashes that cut a lane
 
+    /* ---- Update 4.0 ---- */
+    this.hidden = false;                 // Ninja: unseen in Ambush Mode
+    this.hideT = 0;                      // seconds since the last attack
+    this.rehideMul = 1;
+    this.ambushMul = 1;
+    this.smokeMul = 1;
+    this.rootT = 0;                      // held in place by Flowery's vines
+    this.prejudgedT = 0;                 // Judgement's mark: +30% damage taken
+    this.ward = 0;                       // the Glass Saint's ward: hits absorbed
+    this.energyDebt = null;              // a missed ricochet: 100 stamina, back in 1s
+    this.bossDmg = 0;                    // ring: extra damage to bosses/minibosses
+    this.phoenix = false;                // ring: survive one killing blow per map
+    this.phoenixUsed = false;
+    this.minionCap = 0;
+    this.mashMul = 1;
+
     this._q = [];   // reusable scratch buffer for spatial queries
   }
 
@@ -214,6 +230,79 @@ class Player {
     if (this.manaLockT > 0) { this.manaLockT -= dt; this.mana = 0; }
     this.dashLockT = Math.max(0, this.dashLockT - dt);
     if (this.hpRegen > 0) this.heal(this.hpRegen * dt);
+    this.rootT = Math.max(0, this.rootT - dt);
+    this.prejudgedT = Math.max(0, this.prejudgedT - dt);
+    // A missed ricochet takes 100 stamina for one second, then gives it back.
+    if (this.energyDebt) {
+      this.energyDebt.t -= dt;
+      if (this.energyDebt.t <= 0) {
+        this.energy = Math.min(this.maxEnergy, this.energy + this.energyDebt.amount);
+        this.energyDebt = null;
+      }
+    }
+  }
+
+  /* ---------------- Update 4.0: the Ninja's Ambush Mode ----------------
+     In Ambush Mode you are unseen: enemies lose track of you and wander.
+     Attacking gives you away; a few quiet seconds later you vanish again. */
+
+  isUnseen() { return !!this.hidden; }
+
+  updateStealth(dt, game) {
+    if (!this.cls.ambush) return;
+    if (!this.slotDef || this.slotDef.id !== 'ambush') {
+      this.hidden = false;
+      this.hideT = 0;
+      return;
+    }
+    if (this.hidden) return;
+    this.hideT += dt;
+    if (this.hideT >= this.cls.ambush.rehide * this.rehideMul) this.vanish(game);
+  }
+
+  vanish(game) {
+    this.hidden = true;
+    for (const e of game.enemies) {
+      if (e.dead || e.isHeavyweight || e.neutral) continue;
+      if (U.dist2(e.x, e.y, this.x, this.y) < 64 * 64) continue;
+      e.aggro = false;
+      e.lastSeen = null;
+      // A swing still winding up at you loses its target.
+      if (e.atk && e.atk.target === this && !e.atk.fired) e.atk = null;
+    }
+    game.fx.spark(this.x, this.y, { count: 14, color: ['#9b8cff', '#4a4060'], speedMax: 110, lifeMax: 0.5, glow: false });
+    game.fx.text(this.x, this.y - 40, 'UNSEEN', '#9b8cff', 14);
+    game.audio.vanish();
+  }
+
+  reveal() {
+    this.hidden = false;
+    this.hideT = 0;
+  }
+
+  // The bomb: a cloud that leaves everything in it dizzy enough to attack
+  // its own side. Ten seconds between bombs.
+  throwSmoke(game) {
+    const sm = this.cls.smoke;
+    const cd = this.minionCds.smoke || 0;
+    if (cd > 0) {
+      game.fx.text(this.x, this.y - 30, `smoke in ${Math.ceil(cd)}s`, '#8fa0b8', 12);
+      return;
+    }
+    this.minionCds.smoke = Math.max(3, sm.cooldown - (this.smokeCdCut || 0));
+    const range = Math.min(U.dist(this.x, this.y, game.mouseWorld.x, game.mouseWorld.y), 360);
+    let tx = this.x + Math.cos(this.aim) * range, ty = this.y + Math.sin(this.aim) * range;
+    // Never inside the rock: walk it back toward you until it lands on floor.
+    for (let k = 0; k < 12 && game.dungeon.isSolidAt(tx, ty); k++) {
+      tx = U.lerp(tx, this.x, 0.25); ty = U.lerp(ty, this.y, 0.25);
+    }
+    game.zones.push(new Zone('smoke', tx, ty, {
+      radius: sm.radius * this.smokeMul, life: sm.life + (this.smokeLife || 0),
+      tickEvery: 0.5, damage: sm.poison * 0.5, power: this.power, dizzy: sm.dizzy,
+    }));
+    game.fx.spark(tx, ty, { count: 30, color: ['#7a7090', '#b8b0cc', '#9b8cff'], speedMax: 220, lifeMax: 0.9, sizeMax: 6, glow: false });
+    game.fx.text(tx, ty - 30, 'SMOKE BOMB', '#b8b0cc', 15);
+    game.audio.smokeBomb();
   }
 
   get speedMul() {
@@ -246,6 +335,12 @@ class Player {
   }
 
   get loadout() { return this.cls.loadout || null; }
+  // The Modifier slot's effect, or null (Update 4.0).
+  get modifier() {
+    const id = this.equip.modifier;
+    const item = id ? Gear.get(id) : null;
+    return item ? item.mod : null;
+  }
   get slotDef() { return this.loadout ? Seq.get(this.loadout.options, this.slot) : null; }
 
   cycleSlot(dir = 1) {
@@ -261,6 +356,8 @@ class Player {
       this.applySlotBonus(before, -1);
       this.applySlotBonus(this.slotDef, +1);
       this.roll = null;
+      // Into Ambush Mode: vanish on the next step, not after the usual wait.
+      if (this.slotDef.id === 'ambush') this.hideT = 99;
     }
     return this.slotDef;
   }
@@ -285,6 +382,7 @@ class Player {
       origin: { x: this.x, y: this.y },
       falloff: 0,
       falloffRange: 1,
+      fromPlayer: true,
     }));
   }
 
@@ -296,8 +394,9 @@ class Player {
       return;
     }
     const live = game.minions.filter(m => !m.dead);
-    if (live.length >= this.cls.maxMinions) {
-      game.fx.text(this.x, this.y - 30, 'four is the limit', '#8fa0b8', 12);
+    const cap = this.cls.maxMinions + this.minionCap;
+    if (live.length >= cap) {
+      game.fx.text(this.x, this.y - 30, `${cap} is the limit`, '#8fa0b8', 12);
       return;
     }
     // The brute is a wall, not a swarm: only one may stand at a time.
@@ -331,7 +430,8 @@ class Player {
     if (this.parryCd > 0 || this.parryT > 0 || this.dashT > 0) return;
     // A thumb on glass is less precise than a key: touch gets a 25% wider window.
     const touchBonus = game.touch && game.touch.active ? 1.25 : 1;
-    this.parryT = PARRY.window * this.parryMul * touchBonus;
+    // Hard mode shaves the window down: hell does not wait for you.
+    this.parryT = PARRY.window * this.parryMul * touchBonus * (game.hard ? 0.85 : 1);
     this.parryCd = PARRY.cdWhiff + this.parryT;
     this.deflectPebbles(game);
     this.facing = this.aim;
@@ -347,6 +447,8 @@ class Player {
   takeHit(amount, game, opts = {}) {
     if (this.dead) return 'none';
     let kind = opts.kind || 'blue';
+    // A hexed attacker hits softer (the Hex modifier).
+    if (opts.source && opts.source.hexT > 0) amount *= 1 - (opts.source.hexAmt || 0);
 
     if (this.iframes > 0) {
       game.onDodge(this, opts);
@@ -366,7 +468,7 @@ class Player {
        can be parried. Their light attacks pass straight through a parry —
        you dodge those, and save the parry for the gold telegraph. */
     const src = opts.source;
-    const heavyOnly = !!(src && src.def && (src.def.boss || src.trial));
+    const heavyOnly = !!(src && src.def && (src.def.boss || src.def.big || src.trial));
 
     if (this.isParrying()) {
       const parryable = kind === 'heavy' || (kind === 'blue' && !heavyOnly);
@@ -384,6 +486,19 @@ class Player {
         this.parryCd = PARRY.cdRedFail;
         game.fx.text(this.x, this.y - 46, 'UNBLOCKABLE', '#ff6b52', 15);
       }
+    }
+
+    // The Glass Saint's mirror ward swallows one hit whole and throws some back.
+    if (this.ward > 0) {
+      this.ward--;
+      this.iframes = Math.max(this.iframes, 0.3);
+      game.fx.ring(this.x, this.y, 30, '#cfe8ff', 26);
+      game.fx.text(this.x, this.y - 46, 'WARDED', '#cfe8ff', 15);
+      game.audio.ward();
+      if (src && src.takeDamage && !src.dead && !src.neutral && !src.trial) {
+        src.takeDamage(40, game, this.x, this.y, 200, false);
+      }
+      return 'dodge';
     }
 
     this.takeDamage(amount, game, opts.x, opts.y);
@@ -494,6 +609,8 @@ class Player {
 
   takeDamage(n, game, srcX, srcY) {
     if (this.iframes > 0 || this.dead) return;
+    if (this.prejudgedT > 0) n *= 1.3;       // Judgement's Prejudice
+    if (this.hidden) this.reveal();          // getting hit gives a Ninja away
     let dr = this.dr;
     if (this.wardedByMinions && game.minions.some(m => !m.dead)) dr = 1 - (1 - dr) * 0.86;
     const stanceDr = this.slotDef && this.slotDef.dr ? this.slotDef.dr : 0;
@@ -514,7 +631,20 @@ class Player {
       this.vy += Math.sin(a) * 170;
       game.fx.spark(this.x, this.y, { count: 10, color: ['#ff6b52', '#c8452f'], dir: a, spread: 1.0 });
     }
-    if (this.hp <= 0) { this.hp = 0; this.dead = true; game.onPlayerDeath(); }
+    if (this.hp <= 0) {
+      // The Phoenix Feather: once per map, a killing blow leaves you standing.
+      if (this.phoenix && !this.phoenixUsed) {
+        this.phoenixUsed = true;
+        this.hp = Math.max(1, Math.round(this.maxHp * 0.3));
+        this.iframes = 1.2;
+        game.fx.ring(this.x, this.y, 60, '#ffb347', 44);
+        game.fx.text(this.x, this.y - 50, 'PHOENIX', '#ffb347', 22);
+        game.fx.addFlash('#ffb347', 0.5);
+        game.audio.freeze();
+        return;
+      }
+      this.hp = 0; this.dead = true; game.onPlayerDeath();
+    }
   }
 
   /* ---------------- input-driven update ---------------- */
@@ -532,11 +662,13 @@ class Player {
     this.parryFlash = Math.max(0, this.parryFlash - dt);
     this._noMana = Math.max(0, this._noMana - dt);
     this.updateTimedEffects(dt, game);
+    this.updateStealth(dt, game);
     if (this.usesMana && this.manaLockT <= 0) {
       this.mana = Math.min(this.maxMana, this.mana + this.cls.manaRegen * this.regenMul * dt);
     }
     for (const k in this.minionCds) this.minionCds[k] = Math.max(0, this.minionCds[k] - dt);
-    this.energy = Math.min(this.maxEnergy, this.energy + this.cls.energyRegen * this.regenMul * dt);
+    // Stamina owed to a missed ricochet does not regenerate back early.
+    if (!this.energyDebt) this.energy = Math.min(this.maxEnergy, this.energy + this.cls.energyRegen * this.regenMul * dt);
 
     this.aim = U.angle(this.x, this.y, game.mouseWorld.x, game.mouseWorld.y);
 
@@ -565,6 +697,7 @@ class Player {
     } else {
       let speed = this.cls.speed * this.speedMul;
       if (game.dungeon.isWaterAt(this.x, this.y)) speed *= 0.62;
+      if (this.rootT > 0) speed = 0;
       if (this.charging) speed *= 0.5;
       if (this.swing && this.swing.t < this.swing.wind + 0.06) speed *= 0.45;
       const target = { x: ix * speed, y: iy * speed };
@@ -648,6 +781,7 @@ class Player {
     this.attackCd = a.cd * this.cooldownScale;
     this.facing = this.aim;
     this.cls.onPrimary(this, game);
+    if (this.cls.ambush) this.reveal();     // striking gives you away
   }
 
   releaseHeavy(game) {
@@ -662,6 +796,7 @@ class Player {
     this.attackCd = h.cd * this.cooldownScale;
     this.facing = this.aim;
     this.cls.onHeavy(this, game, power);
+    if (this.cls.ambush) this.reveal();
   }
 
   startSwing(game, cfg) {
@@ -687,10 +822,22 @@ class Player {
       s.hit.add(e);
       let dmg = s.damage;
       if (this.executioner > 0 && e.hp / e.maxHp < 0.33) dmg *= 1 + this.executioner;
-      const crit = U.chance(0.12 + this.critBonus);
-      if (crit) dmg *= 1.7;
-      e.takeDamage(dmg, game, this.x, this.y, s.knock, crit);
+      let crit = U.chance(0.12 + this.critBonus);
+      if (s.ambush) {
+        // Struck from hiding: a guaranteed critical of 100.
+        dmg = Math.max(dmg, this.cls.ambush.damage * this.power * this.ambushMul);
+        crit = true;
+        game.fx.text(e.x, e.y - e.radius - 30, 'AMBUSH!', '#b8a8ff', 20);
+        game.audio.ambush();
+        game.impactFreeze(0.05);
+      } else if (crit) dmg *= 1.7;
+      e.takeDamage(dmg, game, this.x, this.y, s.knock, crit, 'player');
       if (s.stun > 0) e.stun = Math.max(e.stun, s.stun);
+      if (s.fist && this.fistPoison && !e.dead) {
+        e.poisonT = 3;
+        e.poisonStacks = Math.max(1, e.poisonStacks || 0);
+        e.poisonDps = Math.max(e.poisonDps || 0, this.fistPoison);
+      }
       game.fx.addShake(s.heavy ? 5 : 2);
       game.audio.impact(s.heavy);
       if (s.impact) game.impactFreeze(0.05);   // heavy hits hold for a beat
@@ -705,7 +852,7 @@ class Player {
       if (e.dead || this.dashHit.has(e)) continue;
       if (U.dist(this.x, this.y, e.x, e.y) > this.radius + e.radius + 6) continue;
       this.dashHit.add(e);
-      e.takeDamage(dmg, game, this.x, this.y, shield > 0 ? 720 : 420, false);
+      e.takeDamage(dmg, game, this.x, this.y, shield > 0 ? 720 : 420, false, 'player');
       e.stun = Math.max(e.stun, shield > 0 ? 0.7 : 0.4);
       if (shield > 0) { game.impactFreeze(0.05); game.fx.addShake(8); }
       else game.fx.addShake(4);
@@ -713,22 +860,24 @@ class Player {
     if (shield > 0 && this.dashT <= 0) this.dashStrikeDmg = 0;
   }
 
-  /* ---------------- Update 3.0: Tanker ricochet roll ----------------
-     The heavy launches a rolling dash. As you close on an enemy or a wall the
-     ring around you turns GREEN: press M1 and the impact becomes a blue
-     shockwave that bounces you off to keep rolling. Press M1 when it is not
-     green and the ring goes YELLOW and costs 50 stamina. Press nothing and
-     you just bump into whatever you hit, and the roll ends. */
+  /* ---------------- Tanker ricochet roll — reworked in Update 4.0 ----------------
+     The heavy launches a rolling dash. While you roll, MASH M1: every click
+     fills the bounce bar, and the bar drains on its own. With the bar full,
+     the next wall or enemy you meet throws you off in a blue shockwave and
+     you keep rolling — the bar empties, so you mash again for the next one.
+     Meet something with the bar short and the ricochet is missed: you lose
+     100 stamina for one second. Roll into open air and it simply ends. */
 
   startRoll(game, power) {
     this.roll = {
       dir: this.aim, speed: 520, seg: 0, chain: 0,
-      window: false, queued: false, missed: false, flash: 0,
+      meter: 0, charged: false, flash: 0,
       dmg: 34 * power * this.power * this.heavyMul,
       wave: 46 * power * this.power * this.heavyMul,
     };
     this.charging = false;
     game.fx.ring(this.x, this.y, 22, '#4fd0a8', 18);
+    game.fx.text(this.x, this.y - 40, 'MASH M1!', '#3dff7a', 14);
     game.audio.swordSwing(true);
   }
 
@@ -741,17 +890,22 @@ class Player {
 
   rollPress(game) {
     const r = this.roll;
-    // Ignore the press that lands a beat after a perfect bounce: that is a
-    // player following through, not a player mistiming.
-    if (!r || r.queued || r.grace > 0) return;
-    if (r.window && !r.missed) {
-      r.queued = true;
-    } else {
-      r.missed = true;
-      this.energy = Math.max(0, this.energy - 50);
-      game.fx.text(this.x, this.y - 36, 'MISSED  -50', '#ffd479', 14);
-      game.audio.blip(180, 0.12, 0.08, 'sawtooth');
+    if (!r || r.charged) return;
+    r.meter = Math.min(1, r.meter + 0.17 * this.mashMul);
+    game.audio.mash(r.meter);
+    if (r.meter >= 1) {
+      r.charged = true;
+      game.fx.ring(this.x, this.y, 20, '#3dff7a', 14);
+      game.fx.text(this.x, this.y - 40, 'BOUNCE READY', '#3dff7a', 13);
     }
+  }
+
+  missRicochet(game) {
+    const amount = Math.min(100, this.energy);
+    this.energy -= amount;
+    this.energyDebt = { amount, t: 1 };
+    game.fx.text(this.x, this.y - 36, 'RICOCHET MISSED  -100', '#ffd479', 14);
+    game.audio.bounceFail();
   }
 
   updateRoll(dt, game) {
@@ -759,24 +913,8 @@ class Player {
     const dun = game.dungeon;
     r.seg += dt;
     r.flash = Math.max(0, r.flash - dt);
-    r.grace = Math.max(0, (r.grace || 0) - dt);
+    if (!r.charged) r.meter = Math.max(0, r.meter - dt * 0.45);
     const cos = Math.cos(r.dir), sin = Math.sin(r.dir);
-
-    // Look ahead for something to hit: that is when the window is open.
-    const look = 58;
-    let wallAhead = false;
-    for (let s = this.radius; s <= this.radius + look; s += 8) {
-      if (dun.isSolidAt(this.x + cos * s, this.y + sin * s)) { wallAhead = true; break; }
-    }
-    let foe = null;
-    for (const e of game.enemyHash.query(this.x, this.y, this.radius + look + 50, this._q)) {
-      if (e.dead) continue;
-      const gap = U.dist(this.x, this.y, e.x, e.y) - e.radius - this.radius;
-      if (gap > look) continue;
-      if (Math.abs(U.angleDiff(r.dir, U.angle(this.x, this.y, e.x, e.y))) > 0.75) continue;
-      if (!foe || gap < foe.gap) foe = { e, gap };
-    }
-    r.window = wallAhead || !!foe;
 
     // Roll.
     const want = r.speed * dt;
@@ -787,12 +925,21 @@ class Player {
     const blockedY = Math.abs((this.y - oy) - sin * want) > 0.5;
     if (Math.random() < dt * 30) {
       game.fx.spark(this.x, this.y, {
-        count: 2, color: r.missed ? ['#ffd479'] : ['#8fa8c8', '#dfe9f5'],
+        count: 2, color: r.charged ? ['#3dff7a', '#dfe9f5'] : ['#8fa8c8', '#dfe9f5'],
         speedMax: 60, lifeMax: 0.3, sizeMax: 3,
       });
     }
 
-    const touching = foe && foe.gap <= 3 ? foe.e : null;
+    // Anything we are running into, in front of us.
+    let touching = null, best = Infinity;
+    for (const e of game.enemyHash.query(this.x, this.y, this.radius + 70, this._q)) {
+      if (e.dead) continue;
+      const gap = U.dist(this.x, this.y, e.x, e.y) - e.radius - this.radius;
+      if (gap > 3 || gap >= best) continue;
+      if (Math.abs(U.angleDiff(r.dir, U.angle(this.x, this.y, e.x, e.y))) > 1.2) continue;
+      touching = e; best = gap;
+    }
+
     if (!touching && !blockedX && !blockedY) {
       if (r.seg > 1.7) this.endRoll(game, 'spent');   // rolled into open air
       return;
@@ -800,29 +947,28 @@ class Player {
 
     // Contact. Whatever we hit takes the roll either way.
     if (touching) {
-      touching.takeDamage(r.dmg, game, this.x, this.y, 420, false);
+      touching.takeDamage(r.dmg, game, this.x, this.y, 420, false, 'player');
       touching.stun = Math.max(touching.stun, 0.5);
     }
 
-    if (!r.queued) {
+    if (!r.charged) {
       game.fx.addShake(6);
       game.audio.impact(true);
+      this.missRicochet(game);
       this.endRoll(game, 'bump');
       return;
     }
 
-    // Perfect: a blue shockwave, and off we go again.
+    // Full bar: a blue shockwave, and off we go again.
     r.chain++;
-    r.queued = false;
-    r.missed = false;
-    r.window = false;
-    r.grace = 0.18;
+    r.charged = false;
+    r.meter = 0;
     r.seg = 0;
     r.flash = 0.3;
     r.speed = Math.min(860, r.speed * 1.07);
     for (const e of game.enemyHash.query(this.x, this.y, 96, [])) {
       if (e.dead || U.dist(this.x, this.y, e.x, e.y) > 96 + e.radius) continue;
-      e.takeDamage(r.wave, game, this.x, this.y, 520, false);
+      e.takeDamage(r.wave, game, this.x, this.y, 520, false, 'player');
       e.stun = Math.max(e.stun, 0.6);
     }
     game.fx.ring(this.x, this.y, 52, '#4fa8ff', 30);
@@ -902,6 +1048,7 @@ class Player {
       sling: !!cfg.sling,
       ricochet: cfg.pierce ? 0 : this.ricochet,
       owner: 'player',
+      fromPlayer: true,
       color: cfg.color || (cfg.heavy ? '#ffffff' : '#cbd8f0'),
       origin: { x: this.x, y: this.y },
       falloff: this.cls.falloffBonus ? this.cls.falloffBonus * this.falloffMul : 0,
@@ -995,7 +1142,8 @@ class Projectile {
         }
         const crit = U.chance(0.1 + game.player.critBonus);
         if (crit) dmg *= 1.7;
-        e.takeDamage(dmg, game, this.x, this.y, this.knock, crit);
+        if (this.creditTo) e.lastHitBy = this.creditTo;   // companion shots
+        e.takeDamage(dmg, game, this.x, this.y, this.knock, crit, this.fromPlayer ? 'player' : null);
         game.audio.impact(!!this.heavy);
         if (this.effect) this.applyEffect(e, game);
         if (this.aoe) { this.burst(game, e); return; }
@@ -1033,6 +1181,7 @@ class Projectile {
           // Send it back. Turning an archer's own arrow around is the most
           // legible possible reward for a good read.
           this.owner = 'player';
+          this.fromPlayer = true;
           this.hits.clear();
           this.damage = Math.max(this.damage, 14) * p.power * 1.5;
           this.color = '#cfe4ff';
@@ -1071,7 +1220,7 @@ class Projectile {
         count: 6, color: ['#a9dcff', '#ffffff'], speedMax: 90, lifeMax: 0.4, sizeMax: 3,
       });
       // Brain-freeze: a 1-in-100 outright finisher. Never on a boss.
-      if (!e.def.boss && U.chance(0.01)) {
+      if (!e.noExecute && U.chance(0.01)) {
         game.fx.text(e.x, e.y - 40, 'BRAIN-FREEZE', '#a9dcff', 20);
         game.fx.ring(e.x, e.y, 40, '#a9dcff', 30);
         game.fx.addShake(8);
@@ -1080,7 +1229,7 @@ class Projectile {
       }
     } else if (this.effect === 'fling') {
       const weak = e.hp / e.maxHp < 0.35;
-      const liftable = weak && !e.elite && !e.def.boss;
+      const liftable = weak && !e.elite && !e.isHeavyweight;
       const a = U.angle(this.x, this.y, e.x, e.y);
       if (liftable) {
         // Light and hurt: picked up and thrown.
@@ -1115,6 +1264,7 @@ class Projectile {
   }
 
   draw(ctx) {
+    if (this.style) { this.drawStyled(ctx); return; }
     ctx.save();
     for (let i = 0; i < this.trail.length; i++) {
       const t = this.trail[i], a = (i / this.trail.length) * 0.5;
@@ -1130,6 +1280,59 @@ class Projectile {
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+
+  /* Update 4.0: shots that are not just glowing balls. */
+  drawStyled(ctx) {
+    const r = this.radius;
+    const age = this.age || 0;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(Math.atan2(this.vy, this.vx));
+    ctx.shadowBlur = 14; ctx.shadowColor = this.color;
+    switch (this.style) {
+      case 'beam':
+        // A laser bolt: a hot white core inside a coloured streak.
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-r * 5, -r * 0.7, r * 6, r * 1.4);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-r * 4, -r * 0.3, r * 5, r * 0.6);
+        break;
+      case 'petal':
+        ctx.rotate(age * 9);
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.ellipse(0, 0, r * 1.3, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff3a8';
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.3, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'hammer':
+        ctx.rotate(age * 14);
+        ctx.fillStyle = '#6b5a48';
+        ctx.fillRect(-r * 1.1, -r * 0.18, r * 2.2, r * 0.36);
+        ctx.fillStyle = this.color;
+        ctx.fillRect(r * 0.6, -r * 0.6, r * 0.7, r * 1.2);
+        break;
+      case 'missile':
+        ctx.fillStyle = '#c9ccd2';
+        ctx.fillRect(-r * 1.4, -r * 0.4, r * 2.4, r * 0.8);
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.moveTo(r * 1.0, -r * 0.4); ctx.lineTo(r * 1.6, 0); ctx.lineTo(r * 1.0, r * 0.4); ctx.fill();
+        ctx.fillStyle = '#ffd27a';
+        ctx.beginPath(); ctx.arc(-r * 1.6, 0, r * (0.4 + Math.random() * 0.3), 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'shell':
+        ctx.fillStyle = '#2a2a2e';
+        ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = this.color; ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,.4)';
+        ctx.beginPath(); ctx.arc(-r * 0.3, -r * 0.3, r * 0.3, 0, Math.PI * 2); ctx.fill();
+        break;
+      default:
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.restore();
   }
 }
@@ -1527,10 +1730,53 @@ class Enemy {
     this.blinkCd = U.rand(1.5, 3);
     this.combo = null;     // boss combo queue
     this.lastHitBy = null; // companion credit for kills
+    // Update 4.0 statuses — most of them come from modifiers.
+    this.dizzy = 0;        // smoke bomb / chaos: attacks its own side
+    this.burnT = 0; this.burnDps = 0;
+    this.poisonT = 0; this.poisonStacks = 0; this.poisonDps = 0;
+    this.bleedT = 0; this.bleedDps = 0;
+    this.hexT = 0; this.hexAmt = 0;
+    this.dotT = 0;
+    this.tempo = 1;        // hard mode and Judgement 2.0 attack faster
+    this.summoner = null;  // who called it, for summon caps
     this._q = [];
   }
 
   canAct() { return this.stun <= 0 && this.stagger <= 0; }
+
+  // Bosses and minibosses: too heavy to throw around, root, fling or swap.
+  get isHeavyweight() { return !!(this.def.boss || this.def.big); }
+  // ...and never ended by a lucky proc (Sun Minions join them here).
+  get noExecute() { return this.isHeavyweight || !!this.def.noExecute; }
+
+  /* A dizzy enemy's blows land on another enemy through this — the same
+     signature as Player.takeHit, so attack code needs no branching. Friendly
+     fire hits hard: that is the point of the smoke. */
+  takeHit(amount, game, opts = {}) {
+    if (this.dead) return 'none';
+    this.takeDamage(amount * 1.5, game, opts.x, opts.y, 160, false);
+    return 'hit';
+  }
+
+  /* Damage over time from burns, poison and bleeding, in half-second ticks. */
+  updateStatus(dt, game) {
+    this.dizzy = Math.max(0, this.dizzy - dt);
+    this.hexT = Math.max(0, this.hexT - dt);
+    if (this.burnT <= 0 && this.poisonT <= 0 && this.bleedT <= 0) { this.dotT = 0; return; }
+    this.dotT += dt;
+    if (this.dotT >= 0.5) {
+      this.dotT -= 0.5;
+      let dmg = 0;
+      if (this.burnT > 0) dmg += this.burnDps * 0.5;
+      if (this.poisonT > 0) dmg += this.poisonDps * this.poisonStacks * 0.5;
+      if (this.bleedT > 0) dmg += this.bleedDps * 0.5;
+      if (dmg > 0) this.takeDamage(dmg, game, this.x, this.y - 1, 0, false, 'dot');
+    }
+    this.burnT = Math.max(0, this.burnT - dt);
+    this.bleedT = Math.max(0, this.bleedT - dt);
+    this.poisonT = Math.max(0, this.poisonT - dt);
+    if (this.poisonT <= 0) this.poisonStacks = 0;
+  }
 
   // Companions and minions leave John Space alone while he is deciding about
   // you — hitting him is your call, not theirs.
@@ -1611,7 +1857,7 @@ class Enemy {
   // Parried enemies are open: they stop acting and take extra damage.
   onParried(game) {
     if (this.trial) { this.chainParried(game); return; }
-    if (this.def.boss) { this.combo = null; this.state = 'idle'; this.stateT = 0; }
+    if (this.isHeavyweight) { this.combo = null; this.state = 'idle'; this.stateT = 0; }
     this.stagger = PARRY.stagger;
     this.stun = Math.max(this.stun, PARRY.stagger);
     this.atk = null;
@@ -1653,8 +1899,12 @@ class Enemy {
     this.die(game);
   }
 
-  takeDamage(n, game, srcX, srcY, knock = 0, crit = false) {
+  /* `src` is 'player' for hits from your own weapon (modifiers and boss-
+     damage rings key off it), 'dot' for damage-over-time ticks. */
+  takeDamage(n, game, srcX, srcY, knock = 0, crit = false, src = null) {
     if (this.dead) return;
+    if (this.hexT > 0) n *= 1 + this.hexAmt;
+    if (src === 'player' && this.isHeavyweight && game.player.bossDmg) n *= 1 + game.player.bossDmg;
     // Hit John Space once — neutral or mid-trial — and the arrangement is over.
     if ((this.neutral || this.trial) && !this.enraged) this.enrage(game);
     if (!this.awake) this.wake(game);
@@ -1664,7 +1914,7 @@ class Enemy {
        shield (they stagger), and so does getting behind them — which is what
        makes them a puzzle rather than a health sponge. */
     let blocked = false;
-    if (this.def.shielded && this.stagger <= 0 && srcX !== undefined) {
+    if (this.def.shielded && this.stagger <= 0 && srcX !== undefined && src !== 'dot') {
       const from = U.angle(this.x, this.y, srcX, srcY);
       if (Math.abs(U.angleDiff(this.face, from)) < 1.15) { n *= 0.3; blocked = true; }
     }
@@ -1681,13 +1931,17 @@ class Enemy {
     this.flash = 0.13;
     this.aggro = true;
     game.fx.text(this.x, this.y - this.radius - 6, crit ? `${dmg}!` : `${dmg}`,
-      crit ? '#ffd479' : '#ffffff', crit ? 19 : 14);
+      crit ? '#ffd479' : src === 'dot' ? '#b8e07a' : '#ffffff', crit ? 19 : src === 'dot' ? 12 : 14);
+    if (src === 'player') {
+      const mod = game.player.modifier;
+      if (mod) Mods.onHit(this, game, mod, dmg);
+    }
     const a = U.angle(srcX, srcY, this.x, this.y);
     game.fx.spark(this.x, this.y, {
       count: crit ? 12 : 7, color: [this.def.color, '#ffffff'],
       dir: a, spread: 0.9, speedMax: 210, lifeMax: 0.4, sizeMax: 3.5,
     });
-    if (knock > 0 && !this.def.boss) {
+    if (knock > 0 && !this.isHeavyweight) {
       const k = knock / (this.elite ? 2.2 : 1);
       this.vx += Math.cos(a) * k;
       this.vy += Math.sin(a) * k;
@@ -1726,13 +1980,15 @@ class Enemy {
       this.room.alive = Math.max(0, (this.room.alive || 0) - 1);
       if (this.room.alive === 0) this.room.cleared = true;
     }
+    const big = this.isHeavyweight;
     game.fx.spark(this.x, this.y, {
-      count: this.def.boss ? 90 : 20, color: [this.def.color, this.def.dark, '#ffffff'],
-      speedMax: this.def.boss ? 420 : 240, lifeMax: 0.85, sizeMax: this.def.boss ? 7 : 4.5,
+      count: big ? 90 : 20, color: [this.def.color, this.def.dark, '#ffffff'],
+      speedMax: big ? 420 : 240, lifeMax: 0.85, sizeMax: big ? 7 : 4.5,
     });
-    game.fx.ring(this.x, this.y, this.radius, this.def.color, this.def.boss ? 40 : 14);
-    game.fx.addShake(this.def.boss ? 22 : 3 + this.radius * 0.12);
-    game.audio.blip(this.def.boss ? 60 : 140, 0.22, 0.16);
+    game.fx.ring(this.x, this.y, this.radius, this.def.color, big ? 40 : 14);
+    game.fx.addShake(big ? 22 : 3 + this.radius * 0.12);
+    game.audio.blip(big ? 60 : 140, 0.22, 0.16);
+    if (big) game.audio.explode();
 
     game.player.addXp(this.xpValue, game);
     game.player.onKill(game, this);
@@ -1743,7 +1999,13 @@ class Enemy {
       const n = this.def.boss ? 5 : 1;
       for (let i = 0; i < n; i++) game.pickups.push(new Pickup('heart', this.x, this.y, 20));
     }
-    if (this.elite || this.def.boss) game.pickups.push(new Pickup('shard', this.x, this.y, 1));
+    if (this.elite || big) game.pickups.push(new Pickup('shard', this.x, this.y, 1));
+    if (this.def.big) {
+      // A miniboss pays like one.
+      for (let i = 0; i < 2; i++) game.pickups.push(new Pickup('shard', this.x, this.y, 1));
+      for (let i = 0; i < 4; i++) game.pickups.push(new Pickup('heart', this.x, this.y, 25));
+      game.onMinibossDefeated(this);
+    }
     if (this.dropsTotem) {
       game.player.bag.push('cursed-totem');
       game.toast('The Cursed Totem drops back into your bag. Keep it off your friends.', 4);
@@ -1764,11 +2026,15 @@ class Enemy {
     this.chill = Math.max(0, this.chill - dt);
     this.hitCd = Math.max(0, this.hitCd - dt);
     this.shotCd = Math.max(0, this.shotCd - dt);
-    for (const k in this.atkCds) this.atkCds[k] = Math.max(0, this.atkCds[k] - dt);
+    for (const k in this.atkCds) this.atkCds[k] = Math.max(0, this.atkCds[k] - dt * this.tempo);
     this.stateT += dt;
     this.bob += dt * 6;
+    this.updateStatus(dt, game);
+    if (this.dead) return;
 
     const seeP = U.dist(this.x, this.y, p.x, p.y);
+    // The dead of Day-ZEE are not quiet about it.
+    if (this.def.zombie && this.aggro && seeP < 520 && Math.random() < dt * 0.12) game.audio.groan();
 
     // A mimic is furniture until you are within arm's reach.
     if (!this.awake) {
@@ -1782,8 +2048,12 @@ class Enemy {
       if (this.trialT >= this.def.trialRequired) { game.johnBefriended(this); return; }
     }
 
-    const canSee = seeP < 620 && (this.def.ghost || dun.lineOfSight(this.x, this.y, p.x, p.y));
-    if (canSee && seeP < 480) { this.aggro = true; this.lastSeen = { x: p.x, y: p.y }; }
+    // A Ninja in Ambush Mode cannot be seen beyond arm's reach — except by
+    // bosses and minibosses, who are not so easily fooled.
+    const unseen = p.isUnseen && p.isUnseen() && !this.isHeavyweight;
+    const canSee = seeP < 620 && (!unseen || seeP < 64)
+      && (this.def.ghost || dun.lineOfSight(this.x, this.y, p.x, p.y));
+    if (canSee && seeP < (this.def.aggroRange || 480)) { this.aggro = true; this.lastSeen = { x: p.x, y: p.y }; }
 
     // A taunting minion standing closer pulls this enemy off the player —
     // that redirection is the whole reason to pay 40 mana for a Bone Brute.
@@ -1834,9 +2104,15 @@ class Enemy {
       }
     }
 
+    const lost = unseen && !canSee && focus === p;
     if (this.stun > 0 || this.stagger > 0) {
       // staggered: no steering, just slide
-    } else if (!this.aggro) {
+    } else if (this.dizzy > 0 && focus === p && !this.isHeavyweight) {
+      // Dizzy with nobody else to hit: it staggers about, harmless.
+      this.wobble += dt * 5;
+      ax = Math.cos(this.wobble) * this.speed * 0.5;
+      ay = Math.sin(this.wobble * 1.3) * this.speed * 0.5;
+    } else if (!this.aggro || lost) {
       // Idle drift keeps rooms feeling alive before you're noticed.
       if (this.stateT > 1.6) { this.moveAngle = U.rand(0, Math.PI * 2); this.stateT = 0; }
       ax = Math.cos(this.moveAngle) * this.speed * 0.22;
@@ -1845,7 +2121,9 @@ class Enemy {
       const target = (focus !== p) ? focus : (canSee ? p : (this.lastSeen || p));
       const ang = U.angle(this.x, this.y, target.x, target.y);
 
-      switch (this.def_ai_override || this.def.ai) {
+      // A dizzy enemy just runs at whoever it has decided is the enemy.
+      const mode = this.dizzy > 0 && focus !== p ? 'chase' : (this.def_ai_override || this.def.ai);
+      switch (mode) {
         case 'chase': {
           ax = Math.cos(ang) * this.speed;
           ay = Math.sin(ang) * this.speed;
@@ -1860,7 +2138,7 @@ class Enemy {
         }
         case 'ranged': {
           // Archers hold a lane and strafe; they want you at arm's length.
-          const want = 250;
+          const want = this.def.keepAt || 250;
           const drift = d < want - 60 ? -1 : d > want + 60 ? 1 : 0;
           const strafe = ang + Math.PI / 2 * (Math.sin(this.wobble += dt * 1.4) > 0 ? 1 : -1);
           ax = Math.cos(ang) * this.speed * drift + Math.cos(strafe) * this.speed * 0.55;
@@ -1903,6 +2181,11 @@ class Enemy {
         }
         case 'boss': {
           const r = this.bossUpdate(dt, game, ang, d);
+          ax = r.ax; ay = r.ay;
+          break;
+        }
+        case 'miniboss': {
+          const r = this.minibossUpdate(dt, game, ang, d);
           ax = r.ax; ay = r.ay;
           break;
         }
@@ -1954,6 +2237,11 @@ class Enemy {
   // Prefer a taunting minion, but only if it is meaningfully nearer, so the
   // player can still be reached when they walk past the wall.
   pickFocus(game, p, distToPlayer) {
+    // Dizzy: whoever is nearest is the enemy now — so long as it is not you.
+    if (this.dizzy > 0 && !this.isHeavyweight) {
+      const other = game.enemyHash.nearest(this.x, this.y, 360, o => o !== this && o.targetable);
+      if (other) return other;
+    }
     if (this.trial || !game.minions || !game.minions.length) return p;
     let best = p, bestD = distToPlayer * 0.85;
     for (const m of game.minions) {
@@ -1966,9 +2254,13 @@ class Enemy {
 
   tryAttack(game, ang, d, focus) {
     if (this.atk || !this.canAct() || !this.def.attacks) return;
-    const list = this.trial && this.def.trialAttacks ? this.def.trialAttacks : this.def.attacks;
+    let list = this.trial && this.def.trialAttacks ? this.def.trialAttacks : this.def.attacks;
     // On trial John fights only you — never the Bone Brute standing nearby.
     if (this.trial) focus = game.player;
+    // Dizzy and swinging at a friend: hands only, no guns.
+    if (this.dizzy > 0 && focus && focus !== game.player) {
+      list = list.filter(a => a.shape === 'melee' || a.shape === 'charge' || a.shape === 'nova');
+    }
     const ready = list.filter(a =>
       (this.atkCds[a.id] || 0) <= 0 &&
       d <= a.range + this.radius &&
@@ -1985,7 +2277,7 @@ class Enemy {
   updateAttack(dt, game, p) {
     const a = this.atk;
     const def = a.def;
-    a.t += dt;
+    a.t += dt * this.tempo;
     let ax = 0, ay = 0;
 
     if (a.t < def.wind) {
@@ -2002,6 +2294,18 @@ class Enemy {
     } else if (a.t < def.wind + def.active) {
       a.phase = 'active';
       if (!a.fired) { a.fired = true; this.fireAttack(game, a, p); }
+      if (def.spray) {
+        // A stream of shots across the whole active window, tracking you.
+        const want = U.angle(this.x, this.y, p.x, p.y);
+        a.angle += U.clamp(U.angleDiff(a.angle, want), -def.spray.track * dt, def.spray.track * dt);
+        a.sprayT = (a.sprayT || 0) - dt * this.tempo;
+        while (a.sprayT <= 0) {
+          a.sprayT += def.spray.every;
+          this.shoot(game, a.angle + U.rand(-def.spray.jitter, def.spray.jitter),
+            { damage: def.damage, ...def.shot }, 1, def.kind);
+          if (def.sfx && game.audio[def.sfx]) game.audio[def.sfx]();
+        }
+      }
       if (def.shape === 'charge') {
         ax = Math.cos(a.angle) * def.chargeSpeed;
         ay = Math.sin(a.angle) * def.chargeSpeed;
@@ -2039,6 +2343,11 @@ class Enemy {
 
   fireAttack(game, a, p) {
     const def = a.def;
+    if (def.sfx && def.shape !== 'spray' && game.audio[def.sfx]) game.audio[def.sfx]();
+    if (def.shape === 'spray') return;              // streamed by updateAttack
+    if (def.shape === 'barrage') { this.fireBarrage(game, def, p); return; }
+    if (def.shape === 'beams') { this.fireBeams(game, def, p); return; }
+    if (def.shape === 'summon') { this.summonHelp(game, def.summon); return; }
     if (def.shape === 'shot') {
       const n = def.count || 1;
       const color = def.shot.color || BOSS_SHOT_COLOR[this.def.palette] || '#ffffff';
@@ -2050,8 +2359,10 @@ class Enemy {
     }
     if (def.shape === 'nova') {
       // A burst all the way round: distance is the only answer.
-      game.fx.ring(this.x, this.y, def.reach * 0.6, this.def.color, 34);
-      game.fx.spark(this.x, this.y, { count: 30, color: [this.def.color, '#ffffff'], speedMax: 260, lifeMax: 0.6 });
+      const col = def.color || this.def.color;
+      game.fx.ring(this.x, this.y, def.reach * 0.6, col, 34);
+      game.fx.spark(this.x, this.y, { count: 30, color: [col, '#ffffff'], speedMax: 260, lifeMax: 0.6 });
+      game.fx.addShake(this.isHeavyweight ? 9 : 3);
       if (U.dist(this.x, this.y, p.x, p.y) < def.reach + p.radius) this.landHit(game, p, def);
       if (def.leaves === 'spores') {
         game.zones.push(new Zone('goo', this.x, this.y, {
@@ -2065,13 +2376,22 @@ class Enemy {
       // Lobbed where the target stands now — walking is the answer.
       game.impacts.push({
         x: p.x, y: p.y, t: 0, delay: def.impactDelay,
-        radius: def.impactRadius, color: '#c48ade',
+        radius: def.impactRadius, color: def.impactColor || '#c48ade',
+        style: def.impactStyle || null, leaves: def.leaves || null, effect: def.effect || null,
+        fromX: this.x, fromY: this.y,
         aoeDamage: def.damage * this.dmgScale, hostile: true, source: this,
       });
-      game.audio.cast('earth', false);
+      if (!def.sfx) game.audio.cast('earth', false);
       return;
     }
     if (def.shape === 'melee') {
+      if (def.slam) {
+        // A slam: the shockwave is the hitbox, and you can see all of it.
+        game.fx.ring(this.x, this.y, def.reach * 0.6, '#ffd479', 40);
+        game.fx.spark(this.x, this.y, { count: 30, color: ['#ffd479', this.def.color, '#ffffff'], speedMax: 340, lifeMax: 0.6, sizeMax: 5 });
+        game.fx.addShake(12);
+        game.audio.explode();
+      }
       const d = U.dist(this.x, this.y, p.x, p.y);
       if (d > def.reach + p.radius) return;
       const da = Math.abs(U.angleDiff(a.angle, U.angle(this.x, this.y, p.x, p.y)));
@@ -2098,15 +2418,19 @@ class Enemy {
   }
 
   shoot(game, angle, shot, speedMul = 1, kind = 'blue') {
+    // Fixed-number enemies (minibosses, Sun Minions) scale by their own
+    // damage multiplier instead of by region tier.
+    const scale = this.def.noScale ? this.dmgScale : (1 + this.tier * 0.22);
     game.projectiles.push(new Projectile({
       x: this.x + Math.cos(angle) * (this.radius + 4),
       y: this.y + Math.sin(angle) * (this.radius + 4),
       vx: Math.cos(angle) * shot.speed * speedMul,
       vy: Math.sin(angle) * shot.speed * speedMul,
-      damage: shot.damage * (1 + this.tier * 0.22) * (this.shotMul || 1),
+      damage: shot.damage * scale * (this.shotMul || 1),
       life: 3, radius: shot.radius, color: shot.color,
       homing: shot.homing || 0, owner: 'enemy',
       pierce: !!shot.pierce, leaves: shot.leaves || null,
+      style: shot.style || null,
       kind, shooter: this,
     }));
     game.fx.spark(this.x, this.y, { count: 4, color: shot.color, dir: angle, spread: 0.4, speedMax: 110, lifeMax: 0.2 });
@@ -2122,7 +2446,12 @@ class Enemy {
       game.fx.ring(this.x, this.y, this.radius * 1.4, '#ff8a5c', 46);
       game.fx.addShake(16);
       game.bossSay(this, newPhase === 2 ? 'phase2' : 'phase3');
+      game.audio.roar();
     }
+
+    // Update 4.0: every named boss now runs its own kit (js/bosses.js).
+    const kit = BOSS_KITS[this.def.palette];
+    if (kit) return this.kitUpdate(dt, game, ang, d, kit);
 
     let ax = 0, ay = 0;
 
@@ -2225,6 +2554,209 @@ class Enemy {
       }
     }
     return { ax, ay };
+  }
+
+  /* ---------------- Update 4.0: kits for bosses and minibosses ---------------- */
+
+  minibossUpdate(dt, game, ang, d) {
+    const frac = this.hp / this.maxHp;
+    const ph = frac > 0.62 ? 1 : frac > 0.3 ? 2 : 3;
+    if (ph !== this.phase) {
+      this.phase = ph;
+      this.combo = null; this.state = 'idle'; this.stateT = 0;
+      game.fx.ring(this.x, this.y, this.radius * 1.4, '#ff8a5c', 40);
+      game.fx.addShake(12);
+      game.fx.text(this.x, this.y - this.radius - 34, ph === 3 ? 'ENRAGED' : 'ESCALATING', '#ff6b52', 18);
+      game.audio.roar();
+    }
+    if (this.def.vehicle && Math.random() < dt * 0.6) game.audio.engine();
+    return this.kitUpdate(dt, game, ang, d, this.def);
+  }
+
+  /* Walk into range, string a combo together one telegraphed attack at a
+     time, reach for a special now and then, repeat. Every move is a normal
+     `atk`, so it reads, poses and parries like everything else. */
+  kitUpdate(dt, game, ang, d, kit) {
+    let ax = 0, ay = 0;
+    const style = this.def.moveStyle || 'chase';
+    if (kit.tempo && !this._kitTempo) { this._kitTempo = true; this.tempo *= kit.tempo; }
+
+    if (this.state === 'combo') {
+      if (!this.combo || !this.combo.length) {
+        this.combo = null; this.state = 'idle'; this.stateT = 0;
+      } else {
+        const def = kit.moves[this.combo[0]];
+        const inRange = d <= def.range + this.radius;
+        this.comboWait = (this.comboWait || 0) + dt;
+        if (inRange || this.comboWait > 2.2) {
+          this.combo.shift();
+          this.comboWait = 0;
+          if (inRange) {
+            this.atk = { def, t: 0, phase: 'wind', angle: ang, fired: false, hit: false, target: game.player };
+            game.audio.telegraph(def.kind);
+            if (def.kind === 'heavy' && this.def.boss && U.chance(0.35)) game.bossSay(this, 'heavy');
+          }
+        } else if (style !== 'anchored') {
+          ax = Math.cos(ang) * this.speed * 1.5;
+          ay = Math.sin(ang) * this.speed * 1.5;
+        }
+      }
+      return { ax, ay };
+    }
+
+    // Between combos: close in (or hold position, if you are a ship).
+    if (style !== 'anchored' && d > this.radius + 50) {
+      const sp = this.speed * (style === 'slow' ? 0.85 : 1);
+      ax = Math.cos(ang) * sp;
+      ay = Math.sin(ang) * sp;
+    }
+    if (style === 'blink') {
+      this.blinkCd -= dt;
+      if (this.blinkCd <= 0 && d > 160 && d < 600) {
+        this.blinkCd = U.rand(3.5, 5.5);
+        const p = game.player;
+        const side = ang + Math.PI + U.rand(-1, 1);
+        const tx = p.x + Math.cos(side) * 110, ty = p.y + Math.sin(side) * 110;
+        if (bodyFits(game.dungeon, tx, ty, this.radius) && game.dungeon.lineOfSight(p.x, p.y, tx, ty)) {
+          game.fx.spark(this.x, this.y, { count: 18, color: [this.def.color, '#ffffff'], speedMax: 180, lifeMax: 0.4 });
+          this.x = tx; this.y = ty; this.vx = this.vy = 0;
+          game.fx.ring(tx, ty, 26, this.def.color, 18);
+          game.audio.blip(1200, 0.08, 0.06, 'sine');
+        }
+      }
+    }
+
+    const gaps = kit.gap || [2.4, 1.9, 1.4];
+    if (this.stateT > gaps[this.phase - 1] / this.tempo) {
+      this.stateT = 0;
+      for (const sp of kit.specials || []) {
+        if (this.phase >= (sp.minPhase || 1) && U.chance(sp.chance) && this.doSpecial(sp.id, game)) return { ax, ay };
+      }
+      if (kit.closeMove && d < 170 && U.chance(0.55)) {
+        this.combo = [kit.closeMove];
+      } else {
+        const pool = kit.combos
+          .concat(this.phase >= 2 && kit.phase2 ? kit.phase2 : [])
+          .concat(this.phase >= 3 && kit.phase3 ? kit.phase3 : []);
+        this.combo = U.pick(pool).slice();
+        // Later phases tack an extra light hit onto the front.
+        if (this.phase >= 2 && kit.opener) this.combo.unshift(U.pick(kit.opener));
+      }
+      this.comboWait = 0;
+      this.state = 'combo';
+    }
+    return { ax, ay };
+  }
+
+  doSpecial(id, game) {
+    const mine = () => game.enemies.filter(e => !e.dead && e.summoner === this);
+    if (id === 'sunMinions') {
+      // Never more than two Sun Minions at once.
+      const alive = mine().filter(e => e.type === 'sunminion').length;
+      if (alive >= 2) return false;
+      for (let i = alive; i < 2; i++) {
+        const a = U.rand(0, Math.PI * 2);
+        const spot = game.safeSpawnNear(this.x + Math.cos(a) * 120, this.y + Math.sin(a) * 120, 20, a, 20);
+        const m = game.spawnEnemy('sunminion', spot.x, spot.y, this.tier, false);
+        m.summoner = this;
+        m.aggro = true;
+        m.dmgScale = this.dmgScale * 0.45;
+        game.fx.ring(m.x, m.y, 30, '#ffd27a', 24);
+      }
+      game.fx.text(this.x, this.y - this.radius - 40, 'RISE, LITTLE SUNS', '#ffd27a', 18);
+      game.audio.laserCharge();
+      return true;
+    }
+    if (id === 'reinforce') {
+      if (mine().length >= 8) return false;
+      this.summonHelp(game, { types: ['shambler', 'sprinter', 'grunt', 'k9'], count: 3, max: 8 });
+      game.fx.text(this.x, this.y - this.radius - 40, 'REINFORCEMENTS!', '#c4e86b', 18);
+      game.audio.groan();
+      return true;
+    }
+    return false;
+  }
+
+  summonHelp(game, s) {
+    const alive = game.enemies.filter(e => !e.dead && e.summoner === this).length;
+    const n = Math.min(s.count, (s.max || 6) - alive);
+    for (let i = 0; i < n; i++) {
+      const a = U.rand(0, Math.PI * 2);
+      const spot = game.safeSpawnNear(this.x + Math.cos(a) * 90, this.y + Math.sin(a) * 90, 20, a, 16);
+      const e = game.spawnEnemy(U.pick(s.types), spot.x, spot.y, this.tier, false);
+      e.summoner = this;
+      e.aggro = true;
+    }
+    game.fx.ring(this.x, this.y, 90, this.def.color, 30);
+  }
+
+  /* Several ground impacts at once. Patterns:
+       scatter   one on you, the rest around you
+       line      a row from the attacker toward you (vines)
+       carpet    a row walking along the line through you (airstrike)
+       circle    a ring around you — the middle is safe
+       ringSelf  a ring around the attacker */
+  fireBarrage(game, def, p) {
+    const b = def.barrage;
+    const n = b.count;
+    const ang = U.angle(this.x, this.y, p.x, p.y);
+    for (let i = 0; i < n; i++) {
+      let x, y;
+      if (b.pattern === 'line') {
+        const dist = (b.start || 60) + i * b.step;
+        x = this.x + Math.cos(ang) * dist; y = this.y + Math.sin(ang) * dist;
+      } else if (b.pattern === 'carpet') {
+        const off = (i - (n - 1) / 2) * b.step;
+        x = p.x + Math.cos(ang) * off; y = p.y + Math.sin(ang) * off;
+      } else if (b.pattern === 'circle') {
+        const a2 = (i / n) * Math.PI * 2;
+        x = p.x + Math.cos(a2) * b.spread; y = p.y + Math.sin(a2) * b.spread;
+      } else if (b.pattern === 'ringSelf') {
+        const a2 = (i / n) * Math.PI * 2 + this.stateT;
+        x = this.x + Math.cos(a2) * b.spread; y = this.y + Math.sin(a2) * b.spread;
+      } else if (i === 0) {
+        x = p.x; y = p.y;
+      } else {
+        const a2 = U.rand(0, Math.PI * 2), r = U.rand(50, b.spread);
+        x = p.x + Math.cos(a2) * r; y = p.y + Math.sin(a2) * r;
+      }
+      if (game.dungeon.isSolidAt(x, y)) continue;
+      game.impacts.push({
+        x, y, t: 0, delay: b.delay[0] + i * b.delay[1], radius: b.radius, color: b.color,
+        style: b.style || null, effect: b.effect || null, leaves: b.leaves || null,
+        fromX: this.x, fromY: this.y,
+        aoeDamage: def.damage * this.dmgScale, hostile: true, source: this,
+      });
+    }
+  }
+
+  /* Beams: cross / x (centred on you), fan (from the attacker toward you),
+     sweep (from the attacker, rotating through you). */
+  fireBeams(game, def, p) {
+    const B = def.beams;
+    const base = {
+      wind: B.wind, active: B.active, width: B.width, len: B.len, color: B.color,
+      damage: def.damage * this.dmgScale, effect: B.effect || null, source: this,
+    };
+    const ang = U.angle(this.x, this.y, p.x, p.y);
+    const centred = (a) => new Beam({
+      ...base, angle: a, x: p.x - Math.cos(a) * B.len / 2, y: p.y - Math.sin(a) * B.len / 2,
+    });
+    if (B.pattern === 'cross') game.beams.push(centred(0), centred(Math.PI / 2));
+    else if (B.pattern === 'x') game.beams.push(centred(Math.PI / 4), centred(-Math.PI / 4));
+    else if (B.pattern === 'fan') {
+      const n = B.count || 3;
+      for (let i = 0; i < n; i++) {
+        game.beams.push(new Beam({ ...base, x: this.x, y: this.y, follow: this, angle: ang + (i - (n - 1) / 2) * B.gap }));
+      }
+    } else if (B.pattern === 'sweep') {
+      const dir = U.chance(0.5) ? 1 : -1;
+      game.beams.push(new Beam({
+        ...base, x: this.x, y: this.y, follow: this,
+        angle: ang - dir * B.arc / 2, angVel: dir * B.arc / B.active,
+      }));
+    }
+    game.audio.laserCharge();
   }
 }
 

@@ -10,6 +10,7 @@
      yellow     a coin flip. Half the time a blessing, half the time a curse,
                 and you do not get to see which before you touch it.
      corrupted  wakes a miniboss. Kill it and the shrine pays out heavily.
+                Update 4.0: a real one — 50,000 HP, not a swollen elite.
 
    Shrine ids are 1-based per the Update 2.0 convention: SHRINE_CATALOG is a
    dense array, but everything that refers to a shrine by number goes through
@@ -68,6 +69,14 @@ const CLASS_SHRINES = [
     boon: 'Heavy attacks land with considerably more force.',
     apply(p) { p.heavyMul += 0.35; p.knockMul += 0.5; },
   },
+  // Update 4.0. `late` shrines are placed after everything older, so adding
+  // them never moves a prop an existing save points at.
+  {
+    number: 9, id: 'shadows', classId: 'ninja', late: true,
+    name: 'Shrine of Shadows', icon: '◐', color: '#9b8cff',
+    boon: 'Your ambushes cut deeper and the smoke comes back sooner.',
+    apply(p) { p.ambushMul += 0.35; p.smokeCdCut = (p.smokeCdCut || 0) + 2; p.rehideMul *= 0.8; },
+  },
 ];
 
 /* ---------------- yellow shrine outcomes ---------------- */
@@ -104,7 +113,10 @@ const CURSES = [
 
 /* ---------------- corrupted shrine minibosses ---------------- */
 
-const MINIBOSSES = ['ironclad', 'revenant', 'brute', 'wraith', 'mortar'];
+/* Update 4.0: corrupted shrines call genuine minibosses (js/bosses.js).
+   The dungeons get stone, spider and knight; Day-ZEE gets its own horror. */
+const MINIBOSSES = ['colossus', 'broodmother', 'hexknight'];
+const MINIBOSSES_DAYZEE = ['abomination', 'abomination', 'colossus', 'hexknight'];
 
 const Shrines = {
   CLASS_COUNT: CLASS_SHRINES.length,
@@ -112,6 +124,8 @@ const Shrines = {
   byNumber(n) { return Seq.get(CLASS_SHRINES, Seq.clampTo(CLASS_SHRINES, n)); },
   byId(id) { return CLASS_SHRINES.find(s => s.id === id) || null; },
   numbers() { return Seq.range(Seq.FIRST, CLASS_SHRINES.length); },
+  // The original eight, placed where they always were.
+  legacyNumbers() { return CLASS_SHRINES.filter(s => !s.late).map(s => s.number); },
 
   // A class shrine you match pays its listed boon; one you don't gives scraps.
   matches(shrine, player) {
@@ -125,8 +139,10 @@ const Shrines = {
     return { blessed, effect: pick };
   },
 
-  rollMiniboss(rng) {
-    return MINIBOSSES[Math.floor((rng ? rng() : Math.random()) * MINIBOSSES.length)];
+  // One rng draw whatever the list, so the rest of generation is unchanged.
+  rollMiniboss(rng, mapNumber = 1) {
+    const list = mapNumber >= 3 ? MINIBOSSES_DAYZEE : MINIBOSSES;
+    return list[Math.floor((rng ? rng() : Math.random()) * list.length)];
   },
 
   // Icon + colour for a prop type, shared by the world, HUD and both maps so

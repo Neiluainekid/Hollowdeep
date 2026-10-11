@@ -30,6 +30,7 @@ const MAPS = [
     bossHp: 100000,
     gateLine: 'The Bloom That Watches. Press E when you are ready.',
     intro: 'Tripolisis — Dungeon of Chaos',
+    music: 'tripolisis',
     regions: [
       { name: 'Entry Halls', floor: '#4c4657', wall: '#15121b', accent: '#665c73' },
       { name: 'Weeping Cisterns', floor: '#3a525d', wall: '#0f181d', accent: '#4f6f7d' },
@@ -86,6 +87,56 @@ const MAPS = [
       ['ironclad', 'mortar', 'revenant', 'wraith', 'crossbow', 'lancer', 'imp'],
       ['ironclad', 'mortar', 'wraith', 'revenant', 'ironclad', 'lancer', 'cop'],
       ['ironclad', 'wraith', 'mortar', 'revenant', 'ironclad', 'mimic', 'lancer'],
+    ],
+    music: 'sarapolis',
+  },
+
+  /* Update 4.0: Day-ZEE. Not a dungeon — the first stage under open sky, a
+     military base the dead overran. Its own bestiary (nothing from the deep
+     follows you up here), two war machines guarding their yards, and two
+     bosses at 500,000 HP each. */
+  {
+    number: 3,
+    id: 'dayzee',
+    name: 'Day-ZEE',
+    subtitle: 'The Fallen Base',
+    seedSalt: 0x85ebca6b,
+    w: 176, h: 176,
+    roomTarget: 54,
+    threatBias: 4,
+    outdoor: true,             // open sky: roads, yards, sandbags, floodlights
+    difficulty: { hp: 1.15, dmg: 1.1, elite: 1.1 },
+    bosses: [
+      { number: 1, type: 'colonel', name: 'Colonel Zee', hp: 500000 },
+      { number: 2, type: 'judgement2', name: 'Judgement 2.0', hp: 500000 },
+    ],
+    bossType: 'colonel',
+    bossName: 'Colonel Zee',
+    bossHp: 500000,
+    finalBoss: { type: 'judgement2', name: 'Judgement 2.0', hp: 500000 },
+    // The two war machines each hold a yard of their own.
+    warMachines: [
+      { type: 'tank', tiers: [2, 3] },
+      { type: 'battleship', tiers: [4, 4], dock: true },
+    ],
+    gateLine: 'The command bunker. The Colonel is still giving orders. Press E when you are ready.',
+    intro: 'Day-ZEE — The Fallen Base',
+    music: 'dayzee',
+    regions: [
+      { name: 'Checkpoint Alpha', floor: '#55554d', wall: '#2b2a24', accent: '#7c786a' },
+      { name: 'Motor Pool', floor: '#4d4c46', wall: '#26251f', accent: '#706b5c' },
+      { name: 'The Barracks', floor: '#565042', wall: '#2c271d', accent: '#7f7458' },
+      { name: 'Quarantine Zone', floor: '#4b5440', wall: '#22281b', accent: '#6b7a52' },
+      { name: 'The Dry Dock', floor: '#46505a', wall: '#1f252b', accent: '#66737f' },
+      { name: 'Command Bunker', floor: '#4f4444', wall: '#271f1f', accent: '#755e5a' },
+    ],
+    tables: [
+      ['shambler', 'shambler', 'sprinter', 'k9'],
+      ['shambler', 'sprinter', 'k9', 'grunt', 'spewer'],
+      ['sprinter', 'grunt', 'spewer', 'hazmat', 'grenadier', 'riot', 'k9'],
+      ['grunt', 'hazmat', 'gunner', 'riot', 'grenadier', 'sniper', 'spewer'],
+      ['gunner', 'sniper', 'riot', 'grenadier', 'hazmat', 'grunt', 'sprinter'],
+      ['gunner', 'sniper', 'riot', 'hazmat', 'grenadier', 'grunt', 'k9'],
     ],
   },
 ];
